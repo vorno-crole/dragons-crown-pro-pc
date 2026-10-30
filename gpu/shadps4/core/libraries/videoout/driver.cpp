@@ -553,6 +553,21 @@ void VideoOutDriver::Flip(const Request& req) {
             const double draws_per_frame = frames ? double(all_draws - window_draws) / frames : 0.0;
             window_draws = all_draws;
             window_gpu_us = gpu_us;
+            // dcp: render passes and submissions per frame (encoder churn on MoltenVK).
+            static u64 window_passes = 0, window_submissions = 0, window_tessellated = 0;
+            const u64 all_passes = DcpStats::render_passes.load();
+            const u64 all_tessellated = DcpStats::tessellated_draws.load();
+            const u64 all_submissions = DcpStats::submissions.load();
+            if (frames) {
+                std::printf("Frame passes: %.0f render passes/frame, %.0f submissions/frame, "
+                            "%.0f rect/quad list draws/frame\n",
+                            double(all_passes - window_passes) / frames,
+                            double(all_submissions - window_submissions) / frames,
+                            double(all_tessellated - window_tessellated) / frames);
+            }
+            window_tessellated = all_tessellated;
+            window_passes = all_passes;
+            window_submissions = all_submissions;
             std::printf("Frame stats: %.1f FPS, worst frame %.1f ms (vblank %u Hz); "
                         "%u shader/pipeline compiles, %.1f ms; async: capture %.1f ms, workers "
                         "%.1f ms, sync wait %.1f ms, snapshots %.1f ms, GPU capture wait %.1f ms, "

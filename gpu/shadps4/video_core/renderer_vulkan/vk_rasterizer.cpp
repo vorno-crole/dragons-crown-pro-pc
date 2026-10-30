@@ -894,6 +894,10 @@ bool Rasterizer::FilterDrawPasses() const {
 void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* prepared) {
     RENDERER_TRACE;
     DcpStats::draws.fetch_add(1, std::memory_order_relaxed);
+    if (DcpStats::enabled && (Regs().primitive_type == AmdGpu::PrimitiveType::RectList ||
+                              Regs().primitive_type == AmdGpu::PrimitiveType::QuadList)) {
+        DcpStats::tessellated_draws.fetch_add(1, std::memory_order_relaxed);
+    }
 
     // dcp: with the draw pipeline this thread only selects the pipeline and hands the draw
     // to the recording thread (DrawRecord there); draws FilterDraw handles itself run here.

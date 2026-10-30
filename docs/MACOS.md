@@ -43,9 +43,18 @@ environment variables are needed. Install the game from the launcher's **Install
 
 ### Open items
 
-1. **Frame rate.** Profile with `DCP_FRAME_STATS=1` (FPS, pacing and a breakdown of every slow frame). Suspects:
-   GPU write tracking through `mprotect` and the fault handler (Linux uses `userfaultfd`), shader compiles while the
-   cache is empty, MoltenVK overhead, dense arena copies.
+1. **Frame rate.** Profiled with `DCP_FRAME_STATS=1` over 108 windows of the first mission: median frame 33.3 ms
+   (VSync holds frames that miss 16.7 ms to 30 FPS), mean 30 FPS, 5 windows at 50+. **GPU-bound**: in slow windows the
+   render thread is idle 2% and blocked waiting on GPU ticks 58%; 0 write faults/s (the `mprotect` write tracking is
+   not the cause); no shader compiles after start-up; 133-1442 draws per frame, median 434. The same GPU holds 60 on
+   Windows (even on Intel UHD 730), so the cost is in the Metal path.
+   Narrowed down since: the frame rate follows the draw count at about 70 us per draw (about 400 draws: 35 FPS, about
+   650: 20 FPS); VSync off does not help, as the game paces its flips to its emulated 60 Hz (frames still snap to
+   60/30/20/15). `MVK_CONFIG_PERFORMANCE_TRACKING=1` puts the time on the GPU: encoding a submission takes 3.7 ms on
+   the CPU, executing one 43.9 ms on the GPU. Render passes are not the cause (8 per frame at 650 draws; counted in
+   `Frame passes`). Leading suspect: rect and quad lists, the PS4's sprite primitives, are drawn through tessellation,
+   which Metal does not have and MoltenVK emulates with a compute pass and an indirect draw per draw call. `Frame
+   passes` now also counts rect/quad list draws per frame to confirm it.
 2. **Thread cancel.** `scePthreadCancel` of a running thread stopped the game when leaving the tavern. A running thread
    now gets up to 2 s to finish ([runtime_thread.c](../src/runtime_thread.c)); if it is a long-running worker, real
    cancellation is needed.
