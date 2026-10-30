@@ -1,7 +1,7 @@
 # macOS port (Intel)
 
 **Status: playable, early.** On an Intel Mac the game installs from the launcher, boots, and plays its tutorial with
-good graphics, sound and a PS5 controller, at about 30-40 FPS. It is not packaged yet, and longer play is largely
+good graphics, sound and a PS5 controller, at 60 FPS. It is not packaged yet, and longer play is largely
 untested. Work is on branch `feature/macos-intel`.
 
 The approach is the Linux port's ([LINUX.md](LINUX.md)): the same loader, runtime and video core, with
@@ -37,24 +37,17 @@ environment variables are needed. Install the game from the launcher's **Install
 | Audio | works (Core Audio through SDL) |
 | Input | works: keyboard, PS5 controller |
 | Gameplay | tutorial played; leaving the tavern crashed once (thread cancel, fixed, awaiting a retest) |
-| Frame rate | about 30-40 FPS where Windows gets 60; not profiled yet |
+| Frame rate | 60 FPS in town and the first mission (15-35 before fans were drawn as lists) |
 | Packaging | not started: runs from the build folder |
 | Updater | **not adapted**: it offers the upstream release (Windows ZIP or AppImage); do not install updates from a Mac build |
 
 ### Open items
 
-1. **Frame rate.** Profiled with `DCP_FRAME_STATS=1` over 108 windows of the first mission: median frame 33.3 ms
-   (VSync holds frames that miss 16.7 ms to 30 FPS), mean 30 FPS, 5 windows at 50+. **GPU-bound**: in slow windows the
-   render thread is idle 2% and blocked waiting on GPU ticks 58%; 0 write faults/s (the `mprotect` write tracking is
-   not the cause); no shader compiles after start-up; 133-1442 draws per frame, median 434. The same GPU holds 60 on
-   Windows (even on Intel UHD 730), so the cost is in the Metal path.
-   Narrowed down since: the frame rate follows the draw count at about 70 us per draw (about 400 draws: 35 FPS, about
-   650: 20 FPS); VSync off does not help, as the game paces its flips to its emulated 60 Hz (frames still snap to
-   60/30/20/15). `MVK_CONFIG_PERFORMANCE_TRACKING=1` puts the time on the GPU: encoding a submission takes 3.7 ms on
-   the CPU, executing one 43.9 ms on the GPU. Render passes are not the cause (8 per frame at 650 draws; counted in
-   `Frame passes`). Leading suspect: rect and quad lists, the PS4's sprite primitives, are drawn through tessellation,
-   which Metal does not have and MoltenVK emulates with a compute pass and an indirect draw per draw call. `Frame
-   passes` now also counts rect/quad list draws per frame to confirm it.
+1. **Frame rate: fixed, 60 FPS.** Nearly every draw in this game is a triangle fan (the PS4's sprite primitive), and
+   Metal has no fans: MoltenVK rewrote each fan draw with two compute passes, about 70 us of GPU time per draw, so
+   650 draws took the frame to 20 FPS whatever the resolution. On macOS fans and polygons are now drawn as triangle
+   lists (see [Triangle fans](#what-was-found-on-the-way)). Check sprites, backgrounds and the UI for anything missing
+   or spiky.
 2. **Thread cancel.** `scePthreadCancel` of a running thread stopped the game when leaving the tavern. A running thread
    now gets up to 2 s to finish ([runtime_thread.c](../src/runtime_thread.c)); if it is a long-running worker, real
    cancellation is needed.
@@ -142,6 +135,18 @@ turns into `coherent`. Reproduced outside the game with `newComputePipelineState
 MSL without `coherent` builds in safe and fast math. The recompiler leaves the decoration out on macOS
 ([spirv_emit_context.cpp](../gpu/shadps4/shader_recompiler/backend/spirv/spirv_emit_context.cpp)).
 
+**Triangle fans.** The frame rate followed the draw count at about 70 us per draw and did not change at 720p, with
+the render thread waiting on the GPU about 60% of the time. `MVK_CONFIG_PERFORMANCE_TRACKING=1` put the time on the
+GPU (43.9 ms per command buffer, 3.7 ms of CPU encoding). Render passes (8 per frame) and rect lists (8 draws per frame)
+were ruled out with counters on the `Frame passes` line. A Metal System Trace (`xcrun xctrace record --template 'Metal
+System Trace' --attach <pid> --time-limit 5s`) showed about 80,000 extra GPU passes in 5 s, many labelled
+`vkCmdDraw (convert indirect buffers)`, and the fan counter then showed 621 of 635 draws per frame were triangle fans.
+On macOS [liverpool_to_vk.cpp](../gpu/shadps4/video_core/renderer_vulkan/liverpool_to_vk.cpp) maps fans and polygons to
+triangle lists; the rasterizer draws a non-indexed fan from one static index buffer and rewrites an indexed fan's
+indices into the stream buffer (splitting at restart indices), both in Vulkan's fan order (i+1, i+2, 0), so the
+provoking vertex and winding stay the same. Result: 60 FPS at 580-640 draws per frame, GPU wait 0%. An indexed fan's
+indices are read from guest memory, so a GPU-written index buffer would be missed; none is known.
+
 **Thread cancel.** The game cancels short-lived worker threads. On Windows they have finished by then and the cancel
 returns ESRCH; on the slower Mac one was still running and the runtime stopped the game. This applies to every
 platform: a running thread now gets up to 2 s to finish.
@@ -195,11 +200,11 @@ It needs an Apple silicon Mac to try; nothing here has been run there.
 | 1. Build | launcher opens and installs a `.pkg` | done (the boot image byte comparison against Windows/Linux was skipped: no reference build) |
 | 2. Runtime | `dcp-runtime-tests` pass | done |
 | 3. Boot | window, device, guest start-up, threads, audio, input, title menu | done |
-| 4. Play | a full stage at a steady 60 FPS, saves and shader cache written | in progress: tutorial played at 30-40 FPS; open items 1-5 |
+| 4. Play | a full stage at a steady 60 FPS, saves and shader cache written | in progress: 60 FPS in town and the first mission; open items 2-5 |
 | 5. Package | an `.app` that runs from Finder on a clean account | not started |
 
-Phases 0-3 and the start of 4 took about two days. The estimate for the rest: about 1-3 weeks part-time for 60 FPS and
-a stable full playthrough (most of it depends on what profiling shows), and about a week for packaging.
+Phases 0-3 and the start of 4 took about two days, and the frame rate one more evening. The estimate for the rest:
+about 1-2 weeks part-time for a stable full playthrough (open items 2-5), and about a week for packaging.
 
 ## Learnings from SpeedBreaker
 
