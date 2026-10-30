@@ -406,9 +406,25 @@ static ABI int32_t thread_detach(GuestThread *t) {
 #endif
     return 0;
 }
+static int thread_finished(GuestThread *t) {
+    pthread_mutex_lock(&lock);
+    const int finished=t->finished;
+    pthread_mutex_unlock(&lock);
+    return finished;
+}
 static ABI int32_t thread_cancel(GuestThread *t) {
-    if (!find_thread(t) || t->finished) return ERR(3);
-    fputs("STOP: scePthreadCancel of a running thread is not supported\n",stderr);
+    if (!find_thread(t) || thread_finished(t)) return ERR(3);
+    /* Cancellation is not implemented. The game cancels short-lived workers that have already finished on a fast
+     * machine (ESRCH); on a slower one (macOS on MoltenVK) leaving the tavern found one still running. It gets up to
+     * 2 s to finish, after which the cancel is answered as for a finished thread. */
+    for (int waited=0; waited<2000; ++waited) {
+        if (thread_finished(t)) {
+            printf("Runtime: scePthreadCancel of '%s' waited %d ms for it to finish\n",t->name,waited);
+            return ERR(3);
+        }
+        usleep(1000);
+    }
+    fprintf(stderr,"STOP: scePthreadCancel of running thread '%s' is not supported\n",t->name);
     exit(21);
 }
 static ABI __attribute__((noreturn)) void thread_exit(void *value) {
