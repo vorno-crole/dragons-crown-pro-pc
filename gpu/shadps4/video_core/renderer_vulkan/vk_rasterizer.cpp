@@ -81,6 +81,18 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     if (!instance.IsNullDescriptorSupported()) {
         InitNullImages();
     }
+#ifdef __APPLE__
+    fan_indices = std::make_unique<VideoCore::Buffer>(instance, 0, MaxFanTriangles * 3 * sizeof(u32),
+                                                      VideoCore::MemoryType::Stream, "Fan Indices");
+    auto* fan = reinterpret_cast<u32*>(fan_indices->mapped_data.data());
+    for (u32 i = 0; i < MaxFanTriangles; ++i) {
+        // Vulkan's fan triangle i is (i+1, i+2, 0): the same first (provoking) vertex and winding.
+        fan[3 * i] = i + 1;
+        fan[3 * i + 1] = i + 2;
+        fan[3 * i + 2] = 0;
+    }
+    fan_indices->Flush(0, MaxFanTriangles * 3 * sizeof(u32));
+#endif
     if (DrawPipeWanted()) {
         constant_ring = std::make_unique<ConstantRing>(instance, scheduler);
         draw_pipe = std::make_unique<DrawPipe>(&RunDrawPacket, this);
@@ -898,6 +910,10 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
                               Regs().primitive_type == AmdGpu::PrimitiveType::QuadList)) {
         DcpStats::tessellated_draws.fetch_add(1, std::memory_order_relaxed);
     }
+    if (DcpStats::enabled && (Regs().primitive_type == AmdGpu::PrimitiveType::TriangleFan ||
+                              Regs().primitive_type == AmdGpu::PrimitiveType::Polygon)) {
+        DcpStats::fan_draws.fetch_add(1, std::memory_order_relaxed);
+    }
 
     // dcp: with the draw pipeline this thread only selects the pipeline and hands the draw
     // to the recording thread (DrawRecord there); draws FilterDraw handles itself run here.
@@ -1001,13 +1017,39 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     const u32 num_instances = regs.num_instances.NumInstances();
     const u32 first_vertex = vertex_offset;
     const u32 first_instance = instance_offset;
+    // dcp: fans are drawn as triangle lists on macOS (FanIndices): the vertex offset keeps gl_VertexIndex.
+    u32 draw_count = num_indices;
+    bool draw_indexed = is_indexed;
+    vk::Buffer fan_buffer{};
+#ifdef __APPLE__
+    if (IsFan(regs.primitive_type)) {
+        if (is_indexed) {
+            draw_count = fan_index_count;
+        } else {
+            const u32 triangles = num_indices >= 3 ? std::min(num_indices - 2, MaxFanTriangles) : 0;
+            if (num_indices >= 3 && num_indices - 2 > MaxFanTriangles) {
+                LOG_WARNING(Render_Vulkan, "Fan of {} vertices drawn as its first {} triangles", num_indices,
+                            MaxFanTriangles);
+            }
+            draw_count = triangles * 3;
+            draw_indexed = true;
+            fan_buffer = fan_indices->Handle();
+        }
+    }
+#endif
     scheduler.Record([=](vk::CommandBuffer cmdbuf) {
+        if (fan_buffer) {
+            cmdbuf.bindIndexBuffer(fan_buffer, 0, vk::IndexType::eUint32);
+        }
         const auto draw = [&] {
-            if (is_indexed) {
-                cmdbuf.drawIndexed(num_indices, num_instances, 0, s32(first_vertex),
+            if (draw_count == 0) {
+                return;
+            }
+            if (draw_indexed) {
+                cmdbuf.drawIndexed(draw_count, num_instances, 0, s32(first_vertex),
                                    first_instance);
             } else {
-                cmdbuf.draw(num_indices, num_instances, first_vertex, first_instance);
+                cmdbuf.draw(draw_count, num_instances, first_vertex, first_instance);
             }
         };
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
@@ -1730,6 +1772,40 @@ void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
     const VAddr index_address =
         regs.index_base_address.Address<VAddr>() + index_offset * index_size;
 
+#ifdef __APPLE__
+    // dcp: an indexed fan becomes a triangle list here (liverpool_to_vk.cpp): (i, i+1, first) per triangle,
+    // restarting the fan after each restart index, written to the stream buffer.
+    if (IsFan(regs.primitive_type)) {
+        const u32 restart = is_index16 ? 0xFFFFu : 0xFFFFFFFFu;
+        const bool restarts = (regs.enable_primitive_restart & 1) != 0;
+        std::vector<u32> list;
+        list.reserve(regs.num_indices >= 3 ? (regs.num_indices - 2) * 3 : 0);
+        u32 fan_first = 0, fan_size = 0, previous = 0;
+        for (u32 i = 0; i < regs.num_indices; ++i) {
+            const u32 index = is_index16 ? reinterpret_cast<const u16*>(index_address)[i]
+                                         : reinterpret_cast<const u32*>(index_address)[i];
+            if (restarts && index == restart) {
+                fan_size = 0;
+                continue;
+            }
+            if (fan_size == 0) {
+                fan_first = index;
+            } else if (fan_size >= 2) {
+                list.insert(list.end(), {previous, index, fan_first}); // as Vulkan's fan order
+            }
+            previous = index;
+            ++fan_size;
+        }
+        fan_index_count = static_cast<u32>(list.size());
+        if (list.empty()) {
+            return;
+        }
+        auto& stream = buffer_cache.GetStreamBuffer();
+        const u64 offset = stream.Copy(list.data(), list.size() * sizeof(u32), sizeof(u32));
+        index_bind = {stream.Handle(), offset, vk::IndexType::eUint32};
+        return;
+    }
+#endif
     // Bind index buffer.
     const u32 index_buffer_size = regs.num_indices * index_size;
     const auto [buffer, offset] =

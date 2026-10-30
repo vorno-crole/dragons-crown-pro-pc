@@ -118,7 +118,13 @@ vk::PrimitiveTopology PrimitiveType(AmdGpu::PrimitiveType type) {
         return vk::PrimitiveTopology::eTriangleList;
     case AmdGpu::PrimitiveType::TriangleFan:
     case AmdGpu::PrimitiveType::Polygon:
+#ifdef __APPLE__
+        // dcp: Metal has no triangle fans, and MoltenVK rewrites each fan draw with compute passes (about 70 us
+        // of GPU time per draw on AMD). The rasterizer draws fans as triangle lists itself (FanIndices).
+        return vk::PrimitiveTopology::eTriangleList;
+#else
         return vk::PrimitiveTopology::eTriangleFan;
+#endif
     case AmdGpu::PrimitiveType::TriangleStrip:
         return vk::PrimitiveTopology::eTriangleStrip;
     case AmdGpu::PrimitiveType::QuadStrip:

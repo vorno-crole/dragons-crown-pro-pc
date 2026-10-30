@@ -523,6 +523,15 @@ private:
         u64 size;
     };
     NullBufferRange NullBuffer();
+
+    // dcp: macOS draws triangle fans as triangle lists (liverpool_to_vk.cpp). Non-indexed fans use one static
+    // index buffer (i+1, i+2, 0); indexed fans are rewritten into the stream buffer by ResolveIndexBuffer.
+    static bool IsFan(AmdGpu::PrimitiveType type) {
+        return type == AmdGpu::PrimitiveType::TriangleFan || type == AmdGpu::PrimitiveType::Polygon;
+    }
+    static constexpr u32 MaxFanTriangles = 65534;
+    std::unique_ptr<VideoCore::Buffer> fan_indices;
+    u32 fan_index_count = 0; ///< list indices of the last indexed fan (ResolveIndexBuffer)
     vk::ImageView NullImageView(AmdGpu::ImageType type);
     void InitNullImages();
     std::array<VideoCore::UniqueImage, 3> null_images; ///< 1D, 2D, 3D
