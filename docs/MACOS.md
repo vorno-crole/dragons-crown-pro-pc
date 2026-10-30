@@ -1,18 +1,65 @@
 # macOS port (Intel)
 
-**Status: phase 1 in progress.** `tools/build.sh` builds `build/cmake/macos/bin/dragons_crown_pro` on an Intel Mac.
-The launcher starts (Metal renderer) and installs the USA 1.00 package; `--check-imports` creates the game window and a
-Vulkan 1.4 instance on MoltenVK 1.4.2, and the Vulkan device (with placeholders for the robustness2 features MoltenVK lacks), and resolves the game's
-imports (see [Robustness2](#robustness2-worked-around)). The memory and fiber code passes
-`dcp-runtime-tests`. The game boots and draws its first screens on MoltenVK, with dense buffer arenas in place of sparse
-ones (see [Sparse buffers](#sparse-buffers-dense-arenas-on-macos)); it creates its save data. Longer play is untested. Guest-visible heap objects still come from `malloc` (above 1 TiB);
-nothing has failed from it yet. This page records what is known about running the port natively on an Intel
-Mac, the tools the build needs, what has been checked on real hardware, and the order of work. Apple silicon is out
-of scope for now: the game's own x86-64 code runs directly on the host CPU, so an Arm Mac would need Rosetta 2.
-Upstream shadPS4 runs that way, so an Intel build may later work under Rosetta, but nothing here has been tried there.
+**Status: playable, early.** On an Intel Mac the game installs from the launcher, boots, and plays its tutorial with
+good graphics, sound and a PS5 controller, at about 30-40 FPS. It is not packaged yet, and longer play is largely
+untested. Work is on branch `feature/macos-intel`.
 
-The approach is the Linux port's ([LINUX.md](LINUX.md)): the same loader, runtime and video core, with `#if
-defined(__APPLE__)` branches beside the existing `_WIN32` and Linux ones, and no refactors.
+The approach is the Linux port's ([LINUX.md](LINUX.md)): the same loader, runtime and video core, with
+`#if defined(__APPLE__)` branches beside the existing `_WIN32` and Linux ones. Windows and Linux behaviour is
+unchanged unless a section below says otherwise.
+
+## Building and running
+
+```bash
+brew install llvm lld cmake ninja pkgconf sdl3 freetype libpng openssl@3 xxhash \
+    vulkan-headers vulkan-loader glslang spirv-tools fmt boost zydis robin-map
+# Not in Homebrew (both go in the git-ignored build/ folder):
+#   build/macos-deps/include/vma/vk_mem_alloc.h   VMA v3.4.0 (SHA-256 in packaging/linux/ci-deps.sh)
+#   build/macos-deps/lib/libMoltenVK.dylib         Khronos MoltenVK 1.4.2 or newer (or set DCP_MOLTENVK)
+tools/build.sh                    # builds build/cmake/macos/bin/dragons_crown_pro
+tools/build.sh --test             # also builds and runs the 17 focused test suites
+build/cmake/macos/bin/dragons_crown_pro
+```
+
+The build copies MoltenVK and its ICD next to the executable, and the game points the Vulkan loader there itself: no
+environment variables are needed. Install the game from the launcher's **Install game...** as on the other platforms.
+`game/`, `user/` and `logs/` are created in the repository folder while running from the build tree.
+
+## Where it stands
+
+| Area | State |
+| --- | --- |
+| Build | done: Homebrew LLVM 23, x86_64, PIE |
+| Focused tests | all 17 suites pass, `dcp-runtime-tests` included |
+| Launcher | works: install from `.pkg`, settings, subtitle "MAC (INTEL) PORT" |
+| Guest memory, threads, fibers | work (named Mach memory object, guest TCB in a pthread key) |
+| Vulkan on MoltenVK 1.4.2 | works, with workarounds for missing robustness2 features, sparse buffers and a Metal compiler bug |
+| Audio | works (Core Audio through SDL) |
+| Input | works: keyboard, PS5 controller |
+| Gameplay | tutorial played; leaving the tavern crashed once (thread cancel, fixed, awaiting a retest) |
+| Frame rate | about 30-40 FPS where Windows gets 60; not profiled yet |
+| Packaging | not started: runs from the build folder |
+| Updater | **not adapted**: it offers the upstream release (Windows ZIP or AppImage); do not install updates from a Mac build |
+
+### Open items
+
+1. **Frame rate.** Profile with `DCP_FRAME_STATS=1` (FPS, pacing and a breakdown of every slow frame). Suspects:
+   GPU write tracking through `mprotect` and the fault handler (Linux uses `userfaultfd`), shader compiles while the
+   cache is empty, MoltenVK overhead, dense arena copies.
+2. **Thread cancel.** `scePthreadCancel` of a running thread stopped the game when leaving the tavern. A running thread
+   now gets up to 2 s to finish ([runtime_thread.c](../src/runtime_thread.c)); if it is a long-running worker, real
+   cancellation is needed.
+3. **Host heap above 1 TiB.** Objects handed to the guest (TLS blocks, thread, mutex, semaphore, rwlock, event flag
+   and fiber handles) still come from `malloc`, at `0x6000...` and `0x7f...` addresses that do not fit the guest's
+   40-bit pointer fields. Nothing has failed from it yet; it is the most likely cause of a hard-to-explain crash. Fix:
+   a `runtime_low_alloc` over `runtime_low_map` memory, plus a debug check on pointers returned to the guest.
+4. **GPU workarounds to watch:** zeroed placeholders for null descriptors, no `coherent` buffers, `robustBufferAccess`
+   1.0 instead of 2. Wrong pixels or flicker would point here.
+5. **Dense arena memory.** Every touched 256 MiB arena page is allocated in full; VRAM use is not measured.
+6. **Log noise.** MoltenVK warns "Metal does not support disabling primitive restart" on many draws; harmless.
+7. **Packaging.** An `.app` with MoltenVK and the Homebrew dylibs inside, ad hoc signed; data in
+   `~/Library/Application Support/DragonsCrownProPC`.
+8. **Upstream.** The branch is based on v0.8.0; upstream has released v0.9.0.
 
 ## Target machine
 
@@ -22,210 +69,140 @@ defined(__APPLE__)` branches beside the existing `_WIN32` and Linux ones, and no
 | CPU | Intel Core i7-9700K: AVX2, LZCNT, BMI1/BMI2, MOVBE (nothing needs emulating, `isa_emulate.c` stays idle) |
 | GPU | AMD Radeon RX 6600 XT, 8 GB, Metal 3, through MoltenVK |
 | RAM | 32 GB |
+| Display | the game window on the 60 Hz KG271U |
 | Homebrew | Intel, under `/usr/local` (not `/opt/homebrew`) |
 
 ## Tools
 
-### Already installed
+Versions used: Homebrew LLVM and lld 23.1.4 (preferred over Apple clang 17: the same compiler family as the Windows and
+Linux builds), CMake 4.4.4, Ninja 1.13.2, pkgconf 3.0.8, GNU bash 5.3 and coreutils 9.7 (the scripts need bash 4 and
+`sha256sum`), SDL3 3.4.18, FreeType 2.14, libpng 1.6.59, OpenSSL 3.6.3 (keg-only; `tools/build.sh` adds its
+`pkgconfig` folder), xxHash 0.8.3, Vulkan headers and loader 1.4.363, glslang 16.6.0, fmt 12.2.0 (Linux pins 9.1.0;
+12 builds the video core), Boost 1.92 (headers only), Zydis 4.1.1, robin-map 1.4.1. `vulkan-tools` and
+`vulkan-validationlayers` are useful for debugging and not needed to build.
 
-| Tool | Version | Notes |
-| --- | --- | --- |
-| Homebrew LLVM (`clang`, `clang++`) and `lld` | 23.1.4 | `/usr/local/opt/llvm/bin`. Use it instead of Apple clang 17, as SpeedBreaker does: same compiler family as the Windows and Linux builds |
-| Xcode | | the macOS SDK, `codesign`, Metal tools |
-| CMake, Ninja, pkgconf | 4.4.4, 1.13.2, 3.0.8 | the project needs CMake 3.24 |
-| git, GNU bash, coreutils | 2.56, 5.3, 9.7 | the build scripts use bash 4+ features and `sha256sum` |
-| SDL3 | 3.4.18 | Linux pins 3.4.16 |
-| FreeType, libpng, OpenSSL 3 (libcrypto), xxHash | 2.14, 1.6.59, 3.6.3, 0.8.3 | zlib comes from the macOS SDK |
-| Vulkan headers and loader, glslang, SPIRV-Tools | 1.4.363, 16.6.0, 1.4.363 | |
-| molten-vk (Homebrew) | 1.2.11 | **Too old**: advertises Vulkan 1.2, and the video core needs 1.3. See below |
+**MoltenVK:** use the Khronos 1.4.2 release (https://github.com/KhronosGroup/MoltenVK/releases), not Homebrew's
+Intel bottle (1.2.11), which reports Vulkan 1.2 where the video core needs 1.3. 1.2.x also sampled `R8_UNORM` images as
+zero and refused imported host memory on this card (found by SpeedBreaker).
 
-### To install
-
-```bash
-brew install fmt boost zydis robin-map vulkan-tools vulkan-validationlayers
-```
-
-| Package | Why |
-| --- | --- |
-| `fmt` | video core logging. Homebrew has 12.x; Linux pins 9.1.0. If 12 breaks the shadPS4 code, build 9.1.0 into a private prefix as `packaging/linux/ci-deps.sh` does |
-| `boost` | headers only (Linux pins 1.83; Homebrew's 1.92 should do) |
-| `zydis` (pulls in `zycore-c`) | x86 decoder for the video core and guest patching |
-| `robin-map` | `tsl-robin-map` CMake package |
-| `vulkan-tools`, `vulkan-validationlayers` | `vulkaninfo` and validation while debugging; not needed to build |
-| VMA `vk_mem_alloc.h` | not in Homebrew. Fetch the header at the Linux pin (`v3.4.0`, SHA-256 in `ci-deps.sh`) into `<prefix>/include/vma/` |
-
-### MoltenVK 1.4.2
-
-Use the Khronos MoltenVK 1.4.2 release (the macOS release archive from
-https://github.com/KhronosGroup/MoltenVK/releases), not Homebrew's Intel bottle. The SpeedBreaker Intel port already
-has a copy at `speedbreaker/tools/Cellar/molten-vk/1.4.2/lib/libMoltenVK.dylib` (universal, x86_64 + arm64).
-
-The build should ship the dylib with its own `MoltenVK_icd.json` next to the game and point the Vulkan loader at it
-(`VK_ICD_FILENAMES`, set by the game before `vkCreateInstance`), so a system MoltenVK never gets picked up.
-SpeedBreaker's `runtime/CMakeLists.txt` does this with `-DSB_MOLTENVK=<libMoltenVK.dylib>`.
-
-## What has been checked
-
-A small Vulkan probe was run on the RX 6600 XT against both MoltenVK builds.
-
-| | Homebrew 1.2.11 | Khronos 1.4.2 |
-| --- | --- | --- |
-| Instance at Vulkan 1.3 | fails (`VK_ERROR_INCOMPATIBLE_DRIVER`) | device reports **1.3.357** |
-| Required: `VK_KHR_swapchain`, `VK_KHR_push_descriptor`, `VK_EXT_vertex_attribute_divisor`, `VK_EXT_robustness2` | | **all present** |
-| `maxComputeWorkGroupCount[0]` | | 1,073,741,824: the detiler's dispatch of more than 65535 groups (LINUX.md) is fine here |
-| `geometryShader` / `tessellationShader` | | 0 / 1 |
-| Present (optional) | | `present_wait`, `external_memory_host`, `memory_budget`, `maintenance5`, `maintenance8`, `extended_dynamic_state3`, `depth_clip_control`, `shader_stencil_export`, `shader_atomic_float`, `fragment_shader_barycentric` |
-| Missing (optional) | | `custom_border_color`, `depth_clip_enable`, `vertex_input_dynamic_state`, `primitive_topology_list_restart`, `provoking_vertex`, `image_2d_view_of_3d`, `image_view_min_lod`, `depth_range_unrestricted` |
-
-No geometry shaders is not a blocker: rect and quad lists are drawn with tessellation control shaders
-([vk_graphics_pipeline.cpp](../gpu/shadps4/video_core/renderer_vulkan/vk_graphics_pipeline.cpp), `RectListTCS`), and
-real ES/GS draws are skipped with a warning ([vk_pipeline_cache.cpp](../gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp)).
-Whether Dragon's Crown Pro issues any GS draws is still to be seen in the log. The missing optional extensions may
-show up as small visual differences: borders on samplers with custom colours, depth clipping, provoking vertex on
-flat-shaded primitives.
-
-## Found while bringing it up
-
-- **AppKit needs the main thread.** SDL video only initialises on the process's main thread on macOS ("No available
-  video device" elsewhere), but the loader ran the game on the main thread and the game window on a thread of its
-  own. On macOS `main` now starts the loader on a 16 MiB thread and the main thread serves jobs
-  ([main_thread_mac.c](../src/main_thread_mac.c)): the launcher runs there and waits, the game window's event loop runs
-  there for good.
-- **MoltenVK is a portability driver.** The instance needs `VK_KHR_portability_enumeration` and
-  `eEnumeratePortabilityKHR`, and the device `VK_KHR_portability_subset`, or the loader reports
-  `ErrorIncompatibleDriver`. Upstream's Apple code also sets `VK_DRIVER_FILES` to the executable's folder, which
-  overrides `VK_ICD_FILENAMES`: MoltenVK and its ICD are copied next to the game (`DCP_MOLTENVK`, default
-  `build/macos-deps/lib/libMoltenVK.dylib`).
-- **The game window needs a Metal view.** `window.cpp` knew only the windows, x11 and wayland SDL drivers; on `cocoa`
-  the surface is `SDL_Metal_GetLayer(SDL_Metal_CreateView(window))`, as upstream shadPS4 does.
-- **Tests:** all 17 focused suites pass on macOS, `dcp-runtime-tests` included (its `/proc/self/maps` reader has a
-  `mach_vm_region` counterpart).
-- **First guest code:** with `--dcp-skip-launcher` the game runs its own code: splash screen, direct memory, its CRI
-  and RenderDL threads, Core Audio, the pad, the first graphics pipeline. The guest TCB through the pthread key works.
-- **The launcher's Vulkan probe** (`CreateProbeInstance`) needed the same portability flag and bundled-driver path as
-  the renderer's instance, or it reported "No Vulkan graphics driver was found".
-- **Apple's Metal compiler for AMD fails on `coherent device`** ("Compiler encountered an internal error"): the game's
-  compute shader `cs_0x000000008d304694` decorates a written buffer `Coherent`, which MoltenVK turns into MSL
-  `coherent`. Reproduced outside the game through `newComputePipelineStateWithFunction` on the RX 6600 XT; the same
-  MSL without `coherent` builds in safe and fast math. The recompiler leaves the decoration out on macOS
-  ([spirv_emit_context.cpp](../gpu/shadps4/shader_recompiler/backend/spirv/spirv_emit_context.cpp)); watch for stale
-  reads between invocations of one dispatch.
-- **GPU assertion messages were lost.** `assert_fail_impl` called `_Exit` before the POSIX log reader drained the
-  stderr pipe; it now flushes first (Linux had the same gap).
-
-### Sparse buffers (dense arenas on macOS)
-
-**Done:** on macOS the arenas are ordinary device-local buffers of 256 MiB pages (`DENSE_ARENAS` in
-[buffer_cache.h](../gpu/shadps4/video_core/buffer_cache/buffer_cache.h)), allocated in full when first used.
-`EnsureResident` only records residency and writes the BDA page table (`WritePageTable`); a migrating arena copies
-the resident ranges from the arenas it replaces and points the page table at the copy. The game then draws its first
-screens and creates its save data. Memory cost and migration copies are still to be measured. The original findings
-follow.
-
-The buffer cache keeps guest GPU memory in **sparse arenas**: buffers of up to 4 GiB per address-space page whose
-memory is bound where the game uses it (`vkQueueBindSparse`, [buffer_cache.cpp](../gpu/shadps4/video_core/buffer_cache/buffer_cache.cpp)
-`GetArena`, `EnsureResident`, `SubmitPendingArenaBinds`). MoltenVK has no sparse binding (`sparseBinding` and
-`sparseResidencyBuffer` false; Metal has no sparse buffers), so the first arena fails (`Failed to get buffer device
-address`, [buffer.cpp](../gpu/shadps4/video_core/buffer_cache/buffer.cpp)). This is where the fourth boot stops.
-
-Options:
-
-- **Dense arenas:** on macOS, smaller arena pages (for example 256 MiB) allocated as ordinary device buffers when first
-  used, with residency kept as bookkeeping and no binds. Memory cost is the touched pages in full; the cache's upload,
-  download and fault paths stay as they are.
-- **Guest memory import:** arenas as `VK_EXT_external_memory_host` buffers over the guest pool (MoltenVK 1.4.2 takes
-  host pointers on this card, as SpeedBreaker found). Zero-copy, but it changes how the cache keeps GPU and CPU copies
-  apart, a much larger change.
-
-### Robustness2 (worked around)
-
-**Worked around on macOS:** the three features are optional there and enabled only when present. Null buffers (storage,
-uniform and vertex) bind a zeroed 256-byte stream buffer range, and null images a cleared 1x1 placeholder of the
-binding's view type (`Rasterizer::NullBuffer` / `NullImageView`); the texture set memo misses on a null entry, since only
-`BindTextures` knows its view type. Out-of-bounds accesses follow `robustBufferAccess` 1.0. With this the device, the
-presenter and `--check-imports` complete. The original findings follow.
-
-`VK_EXT_robustness2` is listed, but on the RX 6600 XT with MoltenVK 1.4.2 `robustBufferAccess2`, `robustImageAccess2`
-and `nullDescriptor` are all **false** (`robustBufferAccess` 1.0 is true). The renderer asserts all three
-([vk_instance.cpp](../gpu/shadps4/video_core/renderer_vulkan/vk_instance.cpp)). The extension probe earlier on this page
-checked extensions, not features, so it missed this.
-
-- `nullDescriptor` is the one with real work behind it: the rasterizer writes null buffers and image views into
-  descriptors ([vk_rasterizer.cpp](../gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp), about four sites).
-  Without it, those need a small dummy buffer and dummy image views of each view type, as shadPS4 used before it
-  required the feature.
-- `robustBufferAccess2` / `robustImageAccess2` change what out-of-bounds shader accesses return (zero, versus any
-  value in the buffer under 1.0 robustness). Dropping them risks wrong pixels, not crashes; whether this game reads
-  out of bounds is unknown.
-
-## Learnings from SpeedBreaker
-
-SpeedBreaker (`../speedbreaker`, commits `49d8017` and `a7edf3e` on `mac_intel`) is an Xbox 360 static recompilation
-ported to this same machine. Its CPU side is unlike this port's: it runs translated C over a guest memory array, while
-this loader runs the PS4's own code at its real addresses. Its GPU and platform lessons transfer:
-
-- **Use MoltenVK 1.4.2.** With 1.2.x on the RX 6600 XT, `R8_UNORM` images sampled as zero (green movies) and buffers
-  made from imported host memory were refused with `VK_ERROR_FEATURE_NOT_PRESENT`. 1.4.2 fixed both.
-- **Keep a soft fallback for host memory import.** If a driver accepts a host pointer and then refuses the buffer, log
-  it and use a copy instead of asserting.
-- **Fault decoding on Intel macOS:** the faulting PC is `uc_mcontext->__ss.__rip`, and the write bit is
-  `uc_mcontext->__es.__err & 2`. Without the error code every fault looks like a write.
-- **Frame pacing:** keep the monitor at 60 Hz (the KG272U was found at 70-74 Hz), which matches the game's fixed 60 Hz
-  logic. `VK_KHR_present_wait` is present on 1.4.2.
-- **Guest memory sits in system RAM:** with no CPU-visible VRAM reported, the GPU reads it over PCIe. Measure before
-  assuming 1440p and 4K are free.
-- **Debugging:** `MVK_CONFIG_DEBUG=1` logs the generated MSL; `MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=nslog`
-  turns on Metal API validation. Writing frames to files, then converting them with `sips -s format png`, checks
-  rendering without watching the screen.
+Homebrew's Zydis package links `Zycore` by name without a path; [gpu/CMakeLists.txt](../gpu/CMakeLists.txt) points
+it at the `Zycore::Zycore` target.
 
 ## What differs from Linux
 
-Each row is a place where the Linux code uses something macOS does not have.
-
-| Area | Linux today | macOS plan |
+| Area | Linux | macOS |
 | --- | --- | --- |
-| Build gate | [CMakeLists.txt](../CMakeLists.txt) stopped on anything but Windows or Linux x86_64 | done: macOS x86_64 allowed; `tools/build.sh` has a macOS branch (Homebrew LLVM, keg-only OpenSSL, VMA header in `build/macos-deps`). Run the launcher with `VK_ICD_FILENAMES` naming MoltenVK 1.4.2's ICD until it is bundled |
-| Non-PIE build | `-fno-pie` / `-no-pie` keeps the brk heap below 1 TiB | not supported on modern macOS, and there is no brk heap to rely on anyway. Build PIE and fix the heap explicitly (next row) |
-| Host heap the guest sees | `mallopt(M_ARENA_MAX,1)` and `M_MMAP_THRESHOLD` in [loader.c](../src/loader.c) keep `malloc` low | macOS `malloc` returns `0x6000...` and `0x7f...` addresses, which do not fit the guest's 40-bit fields. Add a `runtime_low_alloc` / `runtime_low_free` over `runtime_low_map` memory and use it for every object handed to the guest. Starting list: `runtime_thread.c` (TLS blocks, `GuestThread`, `ThreadAttr`), `runtime_mutex.c` (attrs, mutexes, conds), `runtime_sema.c`, `runtime_rwlock.c`, `runtime_eventflag.c`, `runtime_fiber.c`. A debug check that any pointer returned to the guest is below 1 TiB catches the ones missed |
-| Guest TCB | `arch_prctl(ARCH_SET_GS)` per thread ([runtime_thread.c](../src/runtime_thread.c)) | GS belongs to the pthread TSD array and cannot be moved. Do what Windows does: create a `pthread_key_t` at startup and have [loader.c](../src/loader.c) `patch_tcb_loads` rewrite `mov rax, gs:[0]` to `gs:[8*key]` (the same 9-byte instruction, another displacement). `runtime_thread_tcb_offset()` returns `8*key`; each thread does `pthread_setspecific(key, tcb)` |
-| Address reservation | `MAP_FIXED_NOREPLACE` for `[64 GiB, 1 TiB)` and `[32 GiB, 64 GiB)` ([runtime_memory.c](../src/runtime_memory.c)) | done: `MAP_FIXED_NOREPLACE` is 0 on macOS, so the address is a hint, and both callers already check where the mapping landed. The 4 GiB `__PAGEZERO` is below both ranges, so it can stay |
-| Guest memory backing | one sparse `memfd_create` file, mapped twice for aliasing; `fallocate` punches holes so released pages read as zero | done: one **named Mach memory object** (`mach_make_memory_entry_64` with `MAP_MEM_NAMED_CREATE`), every view (host and guest) mapped from it with `mach_vm_map`; released pages are cleared with `memset`. Two dead ends: `shm_open` memory can never be executable on macOS (maximum protection read/write, an RWX `mmap` silently comes back RW), and an entry made from an existing allocation does not alias views at an offset into it. `dcp-runtime-tests` pass |
-| GPU write tracking | `userfaultfd` write protection ([page_manager.cpp](../gpu/shadps4/video_core/page_manager.cpp)), `mprotect` fallback | `mprotect` + the fault handler only. Correct, slower; measure |
-| Fault handler | `uc_mcontext.gregs[REG_RIP]` etc. ([loader.c](../src/loader.c)) | `uc_mcontext->__ss.__rip` and friends, write bit from `__es.__err`; expect both `SIGSEGV` and `SIGBUS`. [signal_context.cpp](../gpu/shadps4/common/signal_context.cpp) already has the Apple branch. Under LLDB: `process handle SIGSEGV SIGBUS -n false -p true -s false` |
-| Thread list for crash dumps | `/proc/self/task` via `SYS_getdents64`, then `SYS_tgkill` | `task_threads()` and `pthread_kill` over the runtime's own thread registry |
-| Thread ids, names | `gettid`, `pthread_setname_np(thread, name)` | `pthread_threadid_np`; `pthread_setname_np(name)` names only the calling thread. [thread.cpp](../gpu/shadps4/common/thread.cpp) has the Apple branch |
-| Timed locks | `pthread_mutex_timedlock`, `pthread_rwlock_timedrdlock` / `timedwrlock` | not in macOS: emulate with a condition variable or a bounded `trylock` loop |
-| Sleeps | `clock_nanosleep` ([runtime_audio.c](../src/runtime_audio.c)) | `nanosleep`, or `mach_wait_until` for absolute deadlines |
-| Embedded data | `.incbin` in ELF `.section` syntax (fonts, overlay assets) | Mach-O section names (`__DATA,__const`) and leading-underscore symbols |
-| Fibers | assembly context switch (System V) | the same System V code in Mach-O syntax |
-| Executable path | `/proc/self/exe` ([paths.cpp](../launcher/paths.cpp), loader) | `_NSGetExecutablePath` |
-| Data folders | next to the AppImage, `$XDG_DATA_HOME` fallback | next to the `.app` while developing; `~/Library/Application Support/DragonsCrownProPC` for a packaged app |
-| Launcher | `zenity` / `kdialog` or the built-in chooser, `xdg-open`, X11 Shift check | SDL3's native file dialog or the built-in chooser, `open`, Shift from `CGEventSourceFlagsState` |
-| Updater | downloads the Windows ZIP or the AppImage | off on macOS until there is a macOS release asset |
-| Vulkan | loader finds the system driver | ship MoltenVK 1.4.2 and its ICD next to the game; enable `VK_KHR_portability_enumeration` ([vk_platform.cpp](../gpu/shadps4/video_core/renderer_vulkan/vk_platform.cpp) has the Apple surface code) |
+| Build | non-PIE so the brk heap stays below 1 TiB | PIE (macOS has neither non-PIE executables nor a brk heap); see open item 3 |
+| Main thread | the loader runs the game; the game window has a thread of its own | AppKit only works on the main thread: `main` starts the loader on a 16 MiB thread, and the main thread runs the launcher and the game window's event loop ([main_thread_mac.c](../src/main_thread_mac.c)) |
+| Guest TCB | `arch_prctl(ARCH_SET_GS)` per thread | GS is the pthread TSD array: the TCB is a pthread key's value, and the loader patches `mov rax, gs:[0]` to `gs:[8*key]`, as Windows does with a TEB TLS slot |
+| Address reservation | `MAP_FIXED_NOREPLACE` | the address as a hint (`MAP_FIXED_NOREPLACE` is defined as 0 in [compat_mac.h](../src/compat_mac.h)); every caller checks where the mapping landed |
+| Guest memory backing | one sparse `memfd`, `fallocate` hole punching | one named Mach memory object (`mach_make_memory_entry_64`, `MAP_MEM_NAMED_CREATE`); every view, host and guest, is a `mach_vm_map` of it; released pages are cleared with `memset` |
+| GPU write tracking | `userfaultfd`, `mprotect` fallback | `mprotect` and the fault handler only; protection faults arrive as `SIGBUS` |
+| Fault handler | `uc_mcontext.gregs[REG_RIP]` | `uc_mcontext->__ss.__rip` and friends; write bit from `__es.__err & 2` |
+| Watchdog thread dump | `/proc/self/task`, `tgkill`, `process_vm_readv` | `task_threads`, `pthread_kill`, `mach_vm_read_overwrite` |
+| libc gaps | | [compat_mac.h](../src/compat_mac.h): timed mutex and rwlock locks (bounded `trylock` loop), absolute `clock_nanosleep`, `CLOCK_REALTIME_COARSE`; local branches for `st_mtimespec`, `pipe2`, `getrandom` (`arc4random_buf`), `RUSAGE_THREAD`, `pthread_condattr_setclock`, `gettid` ([dcp_mac_compat.h](../gpu/shim/dcp_mac_compat.h)) |
+| Embedded data, fibers | ELF `.incbin` sections, ELF assembly | `__TEXT,__const`, leading-underscore symbols |
+| Executable path | `/proc/self/exe` | `_NSGetExecutablePath` |
+| JSON numbers (updater) | `std::from_chars` for doubles | `strtod_l` in the C locale (libc++ has it only from macOS 26) |
+| Vulkan driver | the system's | MoltenVK and its ICD next to the game (`DCP_MOLTENVK`); `VK_DRIVER_FILES` points the loader there. Both instances (the game's and the launcher's probe) ask for `VK_KHR_portability_enumeration`, and the device enables `VK_KHR_portability_subset` |
+| Game window | X11 or Wayland surface | a Metal view: `SDL_Metal_GetLayer(SDL_Metal_CreateView(window))` |
 
-The calling convention needs no work: PS4 code uses the System V x86-64 ABI, which is also macOS's, so the Windows
-build's `sysv_abi` thunks have nothing to do here.
+## What was found on the way
+
+**Guest memory.** Two designs failed before the named Mach memory object. POSIX shared memory (`shm_open`) can never be
+executable on macOS: its maximum protection is read/write, and an RWX `mmap` silently comes back RW. A Mach memory
+entry made from an existing allocation aliases whole views, but not views at an offset into it. Both were caught by
+`dcp-runtime-tests`, whose `/proc/self/maps` reader now has a `mach_vm_region` counterpart.
+
+**Robustness2.** MoltenVK 1.4.2 lists `VK_EXT_robustness2` on this card but reports none of its features
+(`robustBufferAccess2`, `robustImageAccess2`, `nullDescriptor`). On macOS they are optional: null buffers (storage,
+uniform, vertex) bind a zeroed 256-byte stream buffer range, null images a cleared 1x1 placeholder of the binding's view
+type (`Rasterizer::NullBuffer`, `NullImageView`), and out-of-bounds accesses follow `robustBufferAccess` 1.0. An early
+extension probe had checked extensions, not features, and missed this.
+
+**Sparse buffers.** The buffer cache kept guest GPU memory in sparse arenas of up to 4 GiB, with memory bound where the
+game uses it. Metal has no sparse buffers. On macOS the arenas are ordinary device-local buffers of 256 MiB pages
+(`DENSE_ARENAS` in [buffer_cache.h](../gpu/shadps4/video_core/buffer_cache/buffer_cache.h)), allocated in full when first
+used. `EnsureResident` only records residency and writes the BDA page table (`WritePageTable`); a migrating arena copies
+the resident ranges from the arenas it replaces and points the page table at the copy. Importing guest memory directly
+(`VK_EXT_external_memory_host`) would avoid the copies but changes how the cache keeps GPU and CPU copies apart.
+
+**Metal compiler.** Apple's compiler for AMD GPUs fails on MSL `coherent device` ("Compiler encountered an internal
+error"). The game's compute shader `cs_0x000000008d304694` decorates a written buffer `Coherent`, which MoltenVK
+turns into `coherent`. Reproduced outside the game with `newComputePipelineStateWithFunction` on the RX 6600 XT; the same
+MSL without `coherent` builds in safe and fast math. The recompiler leaves the decoration out on macOS
+([spirv_emit_context.cpp](../gpu/shadps4/shader_recompiler/backend/spirv/spirv_emit_context.cpp)).
+
+**Thread cancel.** The game cancels short-lived worker threads. On Windows they have finished by then and the cancel
+returns ESRCH; on the slower Mac one was still running and the runtime stopped the game. This applies to every
+platform: a running thread now gets up to 2 s to finish.
+
+**Smaller ones.** GPU assertion messages were lost because `assert_fail_impl` called `_Exit` before the log reader
+drained the stderr pipe (Linux too; it flushes now). `<mach/mach.h>` defines `round_page`, which collided with the
+loader's own. The launcher tests read `loader.c`'s call order as text, so the macOS launcher wrapper sits after `main`.
+ld64 only leaves a weak symbol undefined when told to (`-Wl,-U`).
+
+## Debugging
+
+| Tool | Use |
+| --- | --- |
+| `--dcp-skip-launcher` | start the game directly |
+| `--timeout N` | watchdog: after N seconds, dump every thread's stack and stop (exit 142); not a crash |
+| `--check-imports` | create the window and Vulkan device, load the image, resolve imports, run no game code |
+| `DCP_FRAME_STATS=1` | FPS and pacing, and a breakdown of every frame over 40 ms |
+| `DCP_GPU_LOG=info` | more of the video core's log (default: warnings) |
+| `MVK_CONFIG_DEBUG=1` | MoltenVK prints the MSL of every shader it converts |
+| `MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=nslog` | Metal API validation |
+
+Logs are in `logs/` next to the game (`build/logs/` from the build tree). A Metal compiler failure can be reproduced
+outside the game: save the MSL from `MVK_CONFIG_DEBUG=1` and build it with a few lines of Objective-C
+(`newLibraryWithSource`, then `newComputePipelineStateWithFunction`, `MTLLanguageVersion3_2`). `xcrun metal` only runs the
+front end, which does not reach the GPU-specific failures.
+
+## Apple silicon
+
+**Not natively.** The port's core runs the PS4's own x86-64 machine code directly on the CPU; an arm64 build would need
+a translator for the game's code, an emulator-sized project.
+
+**Possibly under Rosetta 2, untested.** This x86_64 build could run on an Arm Mac as it is, with Rosetta translating
+both the port and the game's code:
+
+- For: upstream shadPS4's macOS builds run this way. The guest TCB trick (`gs:[8*key]`) is the same mechanism every
+  Intel Mac program uses for its thread storage, which Rosetta must support. Rosetta translates AVX and AVX2 since
+  macOS 15. Guest pages are already 16 KiB, the Arm host's page size. MoltenVK ships a universal binary, and Apple GPUs
+  have unified memory (no PCIe copies) and better robustness support than AMD under Metal.
+- Against: the game's code is loaded and patched at run time, which Rosetta translates on its slower JIT path; the
+  fault handler rewrites x86 register state under translation (GPU write tracking depends on it); Rosetta's
+  instruction coverage for LZCNT and MOVBE is unverified, though the SIGILL emulation covers MOVBE and BMI1 if signals
+  work; Apple GPUs have their own MoltenVK limits.
+
+It needs an Apple silicon Mac to try; nothing here has been run there.
 
 ## Gameplan
 
-Each phase ends with a check that can be run, so a failure shows up in the phase that caused it.
+| Phase | Done when | State |
+| --- | --- | --- |
+| 0. Tools | Homebrew packages, MoltenVK 1.4.2, Vulkan probe | done |
+| 1. Build | launcher opens and installs a `.pkg` | done (the boot image byte comparison against Windows/Linux was skipped: no reference build) |
+| 2. Runtime | `dcp-runtime-tests` pass | done |
+| 3. Boot | window, device, guest start-up, threads, audio, input, title menu | done |
+| 4. Play | a full stage at a steady 60 FPS, saves and shader cache written | in progress: tutorial played at 30-40 FPS; open items 1-5 |
+| 5. Package | an `.app` that runs from Finder on a clean account | not started |
 
-| Phase | Work | Done when | Estimate |
-| --- | --- | --- | --- |
-| 0. Tools | install the packages above; MoltenVK 1.4.2 with its ICD; the Vulkan probe | probe passes (done for the required features) | done, apart from the installs |
-| 1. Build | CMake Apple branch, the macOS branch of `tools/build.sh`, compile and link fixes from the table: embedded data, paths, thread names, timed locks, sleeps | the launcher opens, installs a `.pkg`, and **the boot image is byte-identical** to the one the Windows and Linux builds make | 2-4 days |
-| 2. Runtime | Mach address reservation, memory backing and aliasing, low heap allocator, fibers, fault handler | `dcp-runtime-tests` pass (reservation, mapping, protection, executable pages, aliasing, fibers across threads) | 1-1.5 weeks |
-| 3. Boot | guest TCB through a pthread key, the below-1 TiB pointer audit, crash dumps, Vulkan device and swapchain on MoltenVK | the LINUX.md first-boot list: window, device, guest start-up, threads, audio, keyboard, logo, save-data dialog, title menu | 1-2 weeks |
-| 4. Play | rendering fixes on MoltenVK; frame pacing with `present_wait`; GPU write tracking speed; controllers | a full stage at a steady 60 fps at 1080p, saves and the shader cache written, no validation errors new to macOS | 1-3 weeks |
-| 5. Package | `.app` with MoltenVK, ICD and dylibs inside; ad hoc signing; launcher Mac paths | the app runs from Finder on a clean user account | about 1 week |
+Phases 0-3 and the start of 4 took about two days. The estimate for the rest: about 1-3 weeks part-time for 60 FPS and
+a stable full playthrough (most of it depends on what profiling shows), and about a week for packaging.
 
-That is about 3-7 weeks of part-time work for a playable personal build. Most of the remaining risk is on the CPU side:
-any host pointer above 1 TiB that reaches the guest corrupts state without failing straight away. The GPU side is
-de-risked by the probe and by SpeedBreaker running on the same card.
+## Learnings from SpeedBreaker
+
+SpeedBreaker (`../speedbreaker`, branch `mac_intel`) is an Xbox 360 static recompilation ported to this same machine.
+Its CPU side is unlike this port's (translated C over a guest memory array), but its GPU lessons transferred: use
+MoltenVK 1.4.2; keep a soft fallback for host memory import; decode Intel Mac faults from `__ss.__rip` and
+`__es.__err & 2`; keep the display at 60 Hz for the game's fixed 60 Hz logic; and guest memory in system RAM is read
+by a discrete GPU over PCIe, so measure before assuming high resolutions are free.
 
 ## Rules
 
-- `#if defined(__APPLE__)` branches next to the existing ones; Windows and Linux behaviour unchanged.
-- No game files, keys or derived data in the repository (`game/`, `user/`, boot images).
-- Record anything found on the way here: what was tried, what fixed it, what it ruled out.
+- `#if defined(__APPLE__)` branches next to the existing ones; Windows and Linux behaviour unchanged unless a change
+  fixes a shared bug (the log flush, thread cancel), and then the commit says so.
+- No game files, keys or derived data in the repository (`game/`, `user/`, boot images, `rars/`).
+- Record what was found here: what was tried, what fixed it, what it ruled out.
