@@ -84,6 +84,17 @@ static void host_return_to_thread(HostFiber *from) { (void)from; SwitchToFiber(f
  * stores its pointer in *save and continues on `to`, a stack prepared the same way. */
 void dcp_fiber_switch(void **save, void *to);
 void dcp_fiber_start(void);
+#ifdef __APPLE__
+/* The same code in Mach-O: leading-underscore symbols, no .type or .size. */
+__asm__(".text\n.globl _dcp_fiber_switch\n_dcp_fiber_switch:\n"
+        " push %rbp\n push %rbx\n push %r12\n push %r13\n push %r14\n push %r15\n"
+        " sub $8,%rsp\n stmxcsr (%rsp)\n fnstcw 4(%rsp)\n"
+        " mov %rsp,(%rdi)\n mov %rsi,%rsp\n"
+        " ldmxcsr (%rsp)\n fldcw 4(%rsp)\n add $8,%rsp\n"
+        " pop %r15\n pop %r14\n pop %r13\n pop %r12\n pop %rbx\n pop %rbp\n ret\n"
+        ".globl _dcp_fiber_start\n_dcp_fiber_start:\n"
+        " mov %rbx,%rdi\n call *%r12\n ud2\n");
+#else
 __asm__(".text\n.globl dcp_fiber_switch\n.type dcp_fiber_switch,@function\ndcp_fiber_switch:\n"
         " push %rbp\n push %rbx\n push %r12\n push %r13\n push %r14\n push %r15\n"
         " sub $8,%rsp\n stmxcsr (%rsp)\n fnstcw 4(%rsp)\n"
@@ -94,6 +105,7 @@ __asm__(".text\n.globl dcp_fiber_switch\n.type dcp_fiber_switch,@function\ndcp_f
         ".globl dcp_fiber_start\n.type dcp_fiber_start,@function\ndcp_fiber_start:\n"
         " mov %rbx,%rdi\n call *%r12\n ud2\n"
         ".size dcp_fiber_start,.-dcp_fiber_start\n");
+#endif
 
 static void fiber_main(HostFiber *f) {
     f->entry(f->arg_on_initialize, f->arg_to_deliver);

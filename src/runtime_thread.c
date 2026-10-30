@@ -4,7 +4,9 @@
  * keeps FS. Priorities/affinity are recorded, not enforced by a PS4 scheduler.
  * Windows: GS is the TEB and cannot be moved. The guest TCB lives in a TLS slot of the TEB
  * instead, and the loader rewrites the load to `mov rax, gs:[0x1480+8*slot]` (TlsSlots),
- * the same 9-byte instruction with another displacement. */
+ * the same 9-byte instruction with another displacement.
+ * macOS: GS is the pthread TSD array and cannot be moved either. The guest TCB is the value of a
+ * pthread key, and the load becomes `mov rax, gs:[8*key]`. */
 #define _GNU_SOURCE
 #include "runtime.h"
 #include <stdio.h>
@@ -17,6 +19,8 @@
 #include <unistd.h>
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <sys/mman.h>
 #else
 #include <sys/syscall.h>
 #include <sys/mman.h>
@@ -109,6 +113,22 @@ static void set_gs(void *base) {
     if (!TlsSetValue(tls_slot,base)) { fprintf(stderr,"STOP: TlsSetValue failed (%lu)\n",GetLastError()); exit(21); }
 }
 #define tls_block_alloc(size) _aligned_malloc(size,64)
+#elif defined(__APPLE__)
+/* The TSD slots are 8 bytes each from gs:0; a key's slot is gs:[8*key]. */
+static pthread_key_t tcb_key;
+static int tcb_key_created;
+uint32_t runtime_thread_tcb_offset(void) {
+    if (!tcb_key_created) {
+        if (pthread_key_create(&tcb_key,NULL)) { fputs("STOP: no pthread key for the guest TCB\n",stderr); exit(21); }
+        tcb_key_created=1;
+    }
+    return 8*(uint32_t)tcb_key;
+}
+static void set_gs(void *base) {
+    runtime_thread_tcb_offset();
+    if (pthread_setspecific(tcb_key,base)) { fputs("STOP: pthread_setspecific failed for the guest TCB\n",stderr); exit(21); }
+}
+#define tls_block_alloc(size) aligned_alloc(64,size)
 #else
 static void set_gs(void *base) {
     if (syscall(SYS_arch_prctl,ARCH_SET_GS,(unsigned long)base)) { perror("STOP: arch_prctl(ARCH_SET_GS)"); exit(21); }
@@ -288,7 +308,11 @@ static ABI int32_t attr_set_guard(ThreadAttr **slot,uint64_t size) {
 static void set_host_name(const char *name) {
     char host[16]={0};
     memcpy(host,name,strnlen(name,sizeof(host)-1));
+#ifdef __APPLE__
+    pthread_setname_np(host); /* names only the calling thread */
+#else
     pthread_setname_np(pthread_self(),host);
+#endif
 }
 #ifdef _WIN32
 #define exit_setjmp(t) dcp_setjmp((t)->exit_jump)

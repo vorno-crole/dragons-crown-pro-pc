@@ -104,7 +104,12 @@ int runtime_log_start(const char *dir, const char *file, char *path, size_t size
     runtime_log_set_session_path(path);
     log_fd = (int)(intptr_t)created;
     int pipes[2];
+#ifdef __APPLE__
+    /* No pipe2: the close-on-exec flags are set right after. */
+    if (pipe(pipes) || fcntl(pipes[0], F_SETFD, FD_CLOEXEC) || fcntl(pipes[1], F_SETFD, FD_CLOEXEC)) {
+#else
     if (pipe2(pipes, O_CLOEXEC)) {
+#endif
         close(log_fd);
         log_fd = -1;
         return 0;

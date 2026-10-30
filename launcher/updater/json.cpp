@@ -1,6 +1,12 @@
 #include "updater/json.h"
 
 #include <charconv>
+#ifdef __APPLE__
+#include <cerrno>
+#include <cstdlib>
+#include <string>
+#include <xlocale.h>
+#endif
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -379,10 +385,22 @@ class Parser {
       }
     }
     double parsed = 0.0;
+#ifdef __APPLE__
+    // libc++ has floating-point from_chars only from macOS 26: strtod in the C locale reads the same numbers.
+    static const locale_t c_locale = newlocale(LC_ALL_MASK, "C", nullptr);
+    const std::string copy(token);
+    char* end = nullptr;
+    errno = 0;
+    parsed = strtod_l(copy.c_str(), &end, c_locale);
+    if (errno == ERANGE || end != copy.c_str() + copy.size() || !std::isfinite(parsed)) {
+      return Fail("invalid JSON number");
+    }
+#else
     const auto result = std::from_chars(token.data(), token.data() + token.size(), parsed, std::chars_format::general);
     if (result.ec != std::errc() || result.ptr != token.data() + token.size() || !std::isfinite(parsed)) {
       return Fail("invalid JSON number");
     }
+#endif
     value.number_ = parsed;
     return true;
   }

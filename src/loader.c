@@ -30,15 +30,31 @@
 #include "module_diagnostics.h"
 #else
 #include <sys/mman.h>
-#include <malloc.h>
 #include <unistd.h>
 #include <signal.h>
-#include <ucontext.h>
 #include <fcntl.h>
 #include <dlfcn.h>
 #include <execinfo.h>
+#ifdef __APPLE__
+#include <pthread.h>
+#include <sys/ucontext.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#undef round_page /* <mach/vm_page_size.h> macros; this file has its own round_page */
+#undef trunc_page
+/* Thread state in a signal context: Darwin keeps it behind a pointer, by register name. */
+#define UC_RIP(uc) ((uc)->uc_mcontext->__ss.__rip)
+#define UC_RBP(uc) ((uc)->uc_mcontext->__ss.__rbp)
+#define UC_RDI(uc) ((uc)->uc_mcontext->__ss.__rdi)
+#else
+#include <malloc.h>
+#include <ucontext.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
+#define UC_RIP(uc) ((uc)->uc_mcontext.gregs[REG_RIP])
+#define UC_RBP(uc) ((uc)->uc_mcontext.gregs[REG_RBP])
+#define UC_RDI(uc) ((uc)->uc_mcontext.gregs[REG_RDI])
+#endif
 #endif
 
 typedef struct { uint64_t address, size, flags; } Segment;
@@ -101,7 +117,7 @@ static ABI __attribute__((noreturn)) void unresolved(uint32_t id, uintptr_t argu
     uintptr_t caller=(uintptr_t)__builtin_return_address(0)-(uintptr_t)image;
     for (uint64_t m=0;m<module_count;++m)
         if (caller>=modules[m].base && caller-modules[m].base<modules[m].size)
-            printf("Caller in linked module %" PRIu64 " (%s): +0x%" PRIxPTR "\n",m,m==0 ? "libc.prx" : "system module",caller-modules[m].base);
+            printf("Caller in linked module %" PRIu64 " (%s): +0x%" PRIxPTR "\n",m,m==0 ? "libc.prx" : "system module",(uintptr_t)(caller-modules[m].base));
     runtime_report();
     puts(entered_game ? "Original guest entry instructions executed; game initialization is incomplete." :
                         "Native libc initialization is incomplete; game entry has not run.");
@@ -111,10 +127,17 @@ static ABI __attribute__((noreturn)) void unresolved(uint32_t id, uintptr_t argu
 #ifndef _WIN32
 /* enter_on_stack(entry, arg0, arg1, stack_top): call entry(arg0,arg1) on a new stack. */
 void enter_on_stack(void *entry, void *arg0, void *arg1, void *top);
+#ifdef __APPLE__
+__asm__(".text\n.globl _enter_on_stack\n_enter_on_stack:\n"
+        " push %rbp\n mov %rsp,%rbp\n and $-16,%rcx\n mov %rcx,%rsp\n"
+        " mov %rdi,%rax\n mov %rsi,%rdi\n mov %rdx,%rsi\n call *%rax\n"
+        " mov %rbp,%rsp\n pop %rbp\n ret\n");
+#else
 __asm__(".text\n.globl enter_on_stack\nenter_on_stack:\n"
         " push %rbp\n mov %rsp,%rbp\n and $-16,%rcx\n mov %rcx,%rsp\n"
         " mov %rdi,%rax\n mov %rsi,%rdi\n mov %rdx,%rsi\n call *%rax\n"
         " mov %rbp,%rsp\n pop %rbp\n ret\n");
+#endif
 #endif
 static ABI void guest_exit(void) { puts("Runtime: process finalizer callback reached"); }
 static void log_cpu(void) {
@@ -250,8 +273,11 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 static LONG WINAPI unhandled_fault(EXCEPTION_POINTERS *info) { return fatal_exception(info); }
+#endif
+#if defined(_WIN32) || defined(__APPLE__)
 /* Guest code reads its TCB with `mov rax, gs:[0]` (the boot image builder rewrote fs:[0]); on Windows
- * the displacement becomes the TEB TLS slot that holds the guest TCB (runtime_thread.c). */
+ * the displacement becomes the TEB TLS slot that holds the guest TCB, on macOS the pthread key's
+ * TSD slot (runtime_thread.c). */
 uint32_t runtime_thread_tcb_offset(void);
 static uint64_t patch_tcb_loads(const Segment *segments, uint64_t count) {
     static const unsigned char load[]={0x65,0x48,0x8b,0x04,0x25,0,0,0,0};
@@ -268,8 +294,13 @@ static uint64_t patch_tcb_loads(const Segment *segments, uint64_t count) {
 #endif
 #ifndef _WIN32
 static void fault(int sig, siginfo_t *info, void *context) {
-    /* GPU page tracking (write-protected guest pages) is resolved first. */
+    /* GPU page tracking (write-protected guest pages) is resolved first. macOS reports a protection
+     * fault on mapped memory as SIGBUS. */
+#ifdef __APPLE__
+    if (gpu_enabled && (sig == SIGSEGV || sig == SIGBUS) && dcpgpu_handle_fault(context, info->si_addr)) return;
+#else
     if (gpu_enabled && sig == SIGSEGV && dcpgpu_handle_fault(context, info->si_addr)) return;
+#endif
     /* A speculative guest memory read (runtime_memory.c) failed: resume its recovery point. */
     if ((sig == SIGSEGV || sig == SIGBUS) && runtime_fault_recover) {
         sigjmp_buf *recover = runtime_fault_recover;
@@ -280,6 +311,23 @@ static void fault(int sig, siginfo_t *info, void *context) {
         pthread_sigmask(SIG_UNBLOCK, &unblock, NULL);
         siglongjmp(*recover, 1);
     }
+#ifdef __APPLE__
+    if (sig == SIGILL) {
+        struct __darwin_x86_thread_state64 *s = &((ucontext_t *)context)->uc_mcontext->__ss;
+        uint64_t *const order[16] = {&s->__rax, &s->__rcx, &s->__rdx, &s->__rbx, &s->__rsp, &s->__rbp, &s->__rsi, &s->__rdi,
+                                     &s->__r8, &s->__r9, &s->__r10, &s->__r11, &s->__r12, &s->__r13, &s->__r14, &s->__r15};
+        uint64_t gpr[16];
+        for (int i = 0; i < 16; ++i) gpr[i] = *order[i];
+        uint64_t at = s->__rip, flags = s->__rflags;
+        size_t length = at - (uintptr_t)image < 0x20000000 ? isa_emulate((const uint8_t *)(uintptr_t)at, at, gpr, &flags) : 0;
+        if (length) {
+            for (int i = 0; i < 16; ++i) *order[i] = gpr[i];
+            s->__rflags = flags;
+            s->__rip = at + length;
+            return;
+        }
+    }
+#else
     if (sig == SIGILL) {
         static const int order[16] = {REG_RAX, REG_RCX, REG_RDX, REG_RBX, REG_RSP, REG_RBP, REG_RSI, REG_RDI,
                                       REG_R8, REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15};
@@ -295,10 +343,11 @@ static void fault(int sig, siginfo_t *info, void *context) {
             return;
         }
     }
+#endif
     runtime_log_mark_crash();
     /* The process is terminating: dladdr/snprintf are acceptable here. */
     ucontext_t *uc = context;
-    uintptr_t rip = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
+    uintptr_t rip = (uintptr_t)UC_RIP(uc);
     char line[512];
     Dl_info where;
     if (rip - (uintptr_t)image < 0x10000000)
@@ -334,20 +383,39 @@ static void write_hex(char *out, uint64_t v) {
     const char digits[] = "0123456789abcdef";
     for (int i = 0; i < 16; ++i) out[i] = digits[(v >> (60 - i * 4)) & 15];
 }
+/* Reads another frame without faulting on a bad pointer. */
+static int read_frame(uintptr_t rbp, uintptr_t frame[2]) {
+#ifdef __APPLE__
+    mach_vm_size_t got=0;
+    return mach_vm_read_overwrite(mach_task_self(),rbp,2*sizeof(uintptr_t),(mach_vm_address_t)(uintptr_t)frame,&got)==KERN_SUCCESS &&
+           got==2*sizeof(uintptr_t);
+#else
+    struct iovec local={frame,2*sizeof(uintptr_t)}, remote={(void *)rbp,2*sizeof(uintptr_t)};
+    return process_vm_readv(getpid(),&local,1,&remote,1,0)==(ssize_t)(2*sizeof(uintptr_t));
+#endif
+}
+static uint64_t host_tid(void) {
+#ifdef __APPLE__
+    uint64_t tid=0;
+    pthread_threadid_np(NULL,&tid);
+    return tid;
+#else
+    return (uint64_t)gettid();
+#endif
+}
 static void dump_frames(ucontext_t *uc) {
     char line[] = "  tid=0000000000000000 rip=0000000000000000 image-relative=0000000000000000 host-relative=0000000000000000\n";
-    uintptr_t rip=(uintptr_t)uc->uc_mcontext.gregs[REG_RIP], rbp=(uintptr_t)uc->uc_mcontext.gregs[REG_RBP];
-    uint64_t tid=(uint64_t)gettid();
+    uintptr_t rip=(uintptr_t)UC_RIP(uc), rbp=(uintptr_t)UC_RBP(uc);
+    uint64_t tid=host_tid();
     /* First argument register: the lock address when a thread waits on a futex. */
     char arg[]="  tid=0000000000000000 rdi=0000000000000000\n";
-    write_hex(arg+6,tid); write_hex(arg+27,(uint64_t)uc->uc_mcontext.gregs[REG_RDI]);
+    write_hex(arg+6,tid); write_hex(arg+27,(uint64_t)UC_RDI(uc));
     { ssize_t written_=write(2,arg,sizeof(arg)-1); (void)written_; }
     for (int depth=0; depth<24; ++depth) {
         write_hex(line+6,tid); write_hex(line+27,rip); write_hex(line+59,rip-(uintptr_t)image); write_hex(line+90,rip-exe_base);
         { ssize_t written_=write(2,line,sizeof(line)-1); (void)written_; }
         uintptr_t frame[2];
-        struct iovec local={frame,sizeof(frame)}, remote={(void *)rbp,sizeof(frame)};
-        if (!rbp || process_vm_readv(getpid(),&local,1,&remote,1,0)!=(ssize_t)sizeof(frame)) break;
+        if (!rbp || !read_frame(rbp,frame)) break;
         if (frame[0]<=rbp) break;
         rbp=frame[0]; rip=frame[1];
     }
@@ -359,6 +427,15 @@ static void watchdog(int sig, siginfo_t *info, void *context) {
     const char head[]="STOP: watchdog timeout; thread stacks:\n";
     { ssize_t written_=write(2,head,sizeof(head)-1); (void)written_; }
     dump_frames(context);
+#ifdef __APPLE__
+    thread_act_array_t threads;
+    mach_msg_type_number_t count=0;
+    if (task_threads(mach_task_self(),&threads,&count)==KERN_SUCCESS)
+        for (mach_msg_type_number_t i=0; i<count; ++i) {
+            pthread_t thread=pthread_from_mach_thread_np(threads[i]);
+            if (thread && !pthread_equal(thread,pthread_self())) { pthread_kill(thread,SIGUSR2); usleep(20000); }
+        }
+#else
     int dir=open("/proc/self/task",O_RDONLY|O_DIRECTORY);
     char buffer[4096];
     long n;
@@ -370,6 +447,7 @@ static void watchdog(int sig, siginfo_t *info, void *context) {
             if (tid>0 && tid!=self) { syscall(SYS_tgkill,getpid(),tid,SIGUSR2); usleep(20000); }
             at+=d->reclen;
         }
+#endif
     usleep(100000);
     runtime_log_flush();
     _exit(128 + sig);
@@ -451,9 +529,10 @@ int main(int argc, char **argv) {
         printf("Boot image written to %s\n", argv[3]);
         return 0;
     }
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__APPLE__)
     /* Keep host heap objects handed to the guest (thread handles, TLS) in the
-       non-PIE brk heap, i.e. below 1 TiB: the guest packs pointers into 40 bits. */
+       non-PIE brk heap, i.e. below 1 TiB: the guest packs pointers into 40 bits.
+       macOS has no brk heap: those objects need the low allocator (docs/MACOS.md). */
     mallopt(M_ARENA_MAX,1);
     mallopt(M_MMAP_THRESHOLD,32*1024*1024);
 #endif
@@ -463,6 +542,8 @@ int main(int argc, char **argv) {
     /* The guest TCB needs one of the 64 TEB TLS slots before DLLs (Vulkan drivers) take them. */
     runtime_thread_tcb_offset();
     module_diagnostics_baseline();
+#elif defined(__APPLE__)
+    runtime_thread_tcb_offset(); /* the guest TCB's pthread key */
 #endif
     int cpu_only = 0, strict_imports = 0, check_imports = 0;
     unsigned timeout_seconds = 0;
@@ -876,6 +957,8 @@ int main(int argc, char **argv) {
     dcp_log_settings_summary(settings_file,paths.image_dir,app0,&run_settings);
 #ifdef _WIN32
     printf("Guest TCB loads redirected to the TEB TLS slot: %" PRIu64 "\n", patch_tcb_loads(segments, ns));
+#elif defined(__APPLE__)
+    printf("Guest TCB loads redirected to the pthread key slot: %" PRIu64 "\n", patch_tcb_loads(segments, ns));
 #endif
     protect(traps, round_page((import_count + 1) * 32), 5);
     protect(image, round_page(size), 0);

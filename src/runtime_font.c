@@ -95,6 +95,11 @@ typedef struct {
 #define DCP_EMBED(symbol, path) \
     __asm__(".section .rdata,\"dr\"\n.balign 16\n.global " #symbol "\n" #symbol ":\n.incbin \"" path "\"\n" \
             ".global " #symbol "_end\n" #symbol "_end:\n.text\n")
+#elif defined(__APPLE__)
+/* Mach-O: C symbols carry a leading underscore. */
+#define DCP_EMBED(symbol, path) \
+    __asm__(".section __TEXT,__const\n.balign 16\n.private_extern _" #symbol "\n.globl _" #symbol "\n_" #symbol ":\n" \
+            ".incbin \"" path "\"\n.private_extern _" #symbol "_end\n.globl _" #symbol "_end\n_" #symbol "_end:\n.text\n")
 #else
 #define DCP_EMBED(symbol, path) \
     __asm__(".section .rodata\n.balign 16\n.hidden " #symbol "\n.global " #symbol "\n" #symbol ":\n.incbin \"" path "\"\n" \

@@ -37,6 +37,18 @@ asm(".section .rdata,\"dr\"\n"
     ".global dcp_font_ttf_end\n"
     "dcp_font_ttf_end:\n"
     ".text\n");
+#elif defined(__APPLE__)
+// Mach-O: C symbols carry a leading underscore.
+asm(".section __TEXT,__const\n"
+    ".balign 16\n"
+    ".private_extern _dcp_font_ttf\n"
+    ".globl _dcp_font_ttf\n"
+    "_dcp_font_ttf:\n"
+    ".incbin \"" DCP_FONT_PATH "\"\n"
+    ".private_extern _dcp_font_ttf_end\n"
+    ".globl _dcp_font_ttf_end\n"
+    "_dcp_font_ttf_end:\n"
+    ".text\n");
 #else
 asm(".section .rodata\n"
     ".balign 16\n"

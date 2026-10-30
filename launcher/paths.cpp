@@ -10,6 +10,9 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #endif
 
 #include <cstdio>
@@ -96,7 +99,16 @@ bool ExecutableDirectory(fs::path& dir) {
 #else
 bool ExecutableDirectory(fs::path& dir) {
     std::error_code ec;
+#ifdef __APPLE__
+    char buffer[4096];
+    uint32_t size = sizeof(buffer);
+    if (_NSGetExecutablePath(buffer, &size) != 0) {
+        return false;
+    }
+    const fs::path exe = fs::canonical(buffer, ec);
+#else
     const fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+#endif
     if (ec || !exe.has_parent_path()) {
         return false;
     }

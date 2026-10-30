@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# Builds dragons_crown_pro on Linux x86_64 incrementally (Clang, CMake + Ninja): the Linux counterpart of tools/build.ps1.
-# The one build configuration, RelWithDebInfo, is what is tested and what an AppImage contains.
+# Builds dragons_crown_pro on Linux x86_64 or (in progress) macOS x86_64 incrementally (Clang, CMake + Ninja): the
+# Linux and macOS counterpart of tools/build.ps1. The one build configuration, RelWithDebInfo, is what is tested and
+# what an AppImage contains.
 #
-#   tools/build.sh            build build/cmake/linux/bin/dragons_crown_pro
-#   tools/build.sh --clean    delete build/cmake/linux first
+#   tools/build.sh            build build/cmake/<linux|macos>/bin/dragons_crown_pro
+#   tools/build.sh --clean    delete build/cmake/<linux|macos> first
 #   tools/build.sh --test     also build and run the focused tests
 #   tools/build.sh --run [args...]   start the loader that was just built (arguments after --run go to it)
 #
-# Missing tools or libraries are listed; packaging/linux/ci-deps.sh installs them on Ubuntu 20.04 (the release baseline).
+# Missing tools or libraries are listed; packaging/linux/ci-deps.sh installs them on Ubuntu 20.04 (the release baseline),
+# docs/MACOS.md lists the Homebrew packages for macOS.
 set -euo pipefail
 root=$(cd -- "$(dirname -- "$0")/.." && pwd)
-build_dir=$root/build/cmake/linux
+platform=linux
+[[ $(uname -s) == Darwin ]] && platform=macos
+build_dir=$root/build/cmake/$platform
 config=RelWithDebInfo
 clean=0 test=0 run=0
 loader_args=()
@@ -28,9 +32,21 @@ done
 step() { printf '\n==> %s\n' "$*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-[[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || die 'This script builds for Linux x86_64 only (Windows: tools\build.ps1).'
+[[ $(uname -s) =~ ^(Linux|Darwin)$ && $(uname -m) == x86_64 ]] ||
+    die 'This script builds for Linux x86_64 and macOS x86_64 only (Windows: tools\build.ps1).'
 
-cc=${CC:-clang} cxx=${CXX:-clang++}
+cmake_platform_args=()
+if [[ $platform == macos ]]; then
+    # Homebrew's LLVM (Intel Homebrew lives in /usr/local), keg-only OpenSSL, and the VMA header that Homebrew lacks.
+    brew_prefix=$(brew --prefix 2>/dev/null || echo /usr/local)
+    cc=${CC:-$brew_prefix/opt/llvm/bin/clang} cxx=${CXX:-$brew_prefix/opt/llvm/bin/clang++}
+    export PKG_CONFIG_PATH=$brew_prefix/opt/openssl@3/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}
+    vma_header=$root/build/macos-deps/include/vma/vk_mem_alloc.h
+    [[ -f $vma_header ]] || die "Missing $vma_header (docs/MACOS.md: VMA v3.4.0)"
+    cmake_platform_args+=("-DCMAKE_PREFIX_PATH=$brew_prefix;$brew_prefix/opt/openssl@3;$root/build/macos-deps")
+else
+    cc=${CC:-clang} cxx=${CXX:-clang++}
+fi
 missing=()
 for tool in "$cc" "$cxx" cmake ninja pkg-config git; do
     command -v "$tool" >/dev/null || missing+=("$tool")
@@ -43,7 +59,8 @@ if command -v pkg-config >/dev/null; then
 fi
 if ((${#missing[@]})); then
     echo "Missing: ${missing[*]}" >&2
-    echo 'packaging/linux/ci-deps.sh prepares the Ubuntu 20.04 release build environment (docs/LINUX.md).' >&2
+    echo 'packaging/linux/ci-deps.sh prepares the Ubuntu 20.04 release build environment (docs/LINUX.md);' >&2
+    echo 'on macOS, docs/MACOS.md lists the Homebrew packages.' >&2
     exit 1
 fi
 
@@ -87,11 +104,11 @@ while read -r path url commit; do
     printf '%s' "$expected" > "$dir/.dcp_commit"
 done < "$root/gpu/deps.txt"
 
-((clean)) && { step 'Cleaning build/cmake/linux'; rm -rf "$build_dir"; }
+((clean)) && { step "Cleaning build/cmake/$platform"; rm -rf "$build_dir"; }
 if ! grep -qs "CMAKE_BUILD_TYPE:STRING=$config" "$build_dir/CMakeCache.txt" || [[ ! -f $build_dir/build.ninja ]]; then
     step 'Configuring'
     cmake -S "$root" -B "$build_dir" -G Ninja -DCMAKE_BUILD_TYPE=$config \
-        -DCMAKE_C_COMPILER="$cc" -DCMAKE_CXX_COMPILER="$cxx"
+        -DCMAKE_C_COMPILER="$cc" -DCMAKE_CXX_COMPILER="$cxx" "${cmake_platform_args[@]}"
 fi
 step 'Building'
 targets=(dragons_crown_pro)

@@ -274,9 +274,19 @@ static int pool(void) {
     if (pool_fd>=0) return 0;
     runtime_memory_reserve();
     const uint64_t bytes=POOL_SIZE+FLEX_SPAN;
+#ifdef __APPLE__
+    /* No memfd: an unlinked POSIX shared memory object is just as sparse, and is mapped the same way. */
+    char name[64];
+    snprintf(name,sizeof(name),"/dcp-guest-memory-%d",(int)getpid());
+    const int fd=shm_open(name,O_RDWR|O_CREAT|O_EXCL,0600);
+    if (fd>=0) { shm_unlink(name); fcntl(fd,F_SETFD,FD_CLOEXEC); }
+    const char *create="shm_open";
+#else
     const int fd=memfd_create("dcp-guest-memory", MFD_CLOEXEC);
+    const char *create="memfd_create";
+#endif
     void *view=MAP_FAILED;
-    if (fd<0) fprintf(stderr,"Runtime: cannot create %" PRIu64 " MiB of guest memory (memfd_create: %s)\n",bytes>>20,strerror(errno));
+    if (fd<0) fprintf(stderr,"Runtime: cannot create %" PRIu64 " MiB of guest memory (%s: %s)\n",bytes>>20,create,strerror(errno));
     else if (ftruncate(fd,(off_t)bytes)) fprintf(stderr,"Runtime: cannot size %" PRIu64 " MiB of guest memory (ftruncate: %s)\n",bytes>>20,strerror(errno));
     else if ((view=mmap(NULL,bytes,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_NORESERVE,fd,0))==MAP_FAILED)
         fprintf(stderr,"Runtime: cannot map %" PRIu64 " MiB of guest memory (mmap: %s)\n",bytes>>20,strerror(errno));
@@ -317,7 +327,12 @@ static int host_protect(uintptr_t address, uint64_t size, int prot) {
     return in_user_range(address,size) ? mprotect((void *)address,size,prot) : -1;
 }
 static void host_discard(uint64_t phys, uint64_t size) {
+#ifdef __APPLE__
+    /* No hole punching in shared memory objects: released pages are cleared through the backing view. */
+    memset(backing_base+phys,0,(size_t)size);
+#else
     fallocate(pool_fd,FALLOC_FL_PUNCH_HOLE|FALLOC_FL_KEEP_SIZE,(off_t)phys,(off_t)size);
+#endif
 }
 #endif
 /* Called before the GPU, audio or guest threads start, while a failure can still be reported. */

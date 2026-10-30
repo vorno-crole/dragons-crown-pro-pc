@@ -15,7 +15,9 @@
 #include <sys/time.h>
 #include <x86intrin.h>
 #ifndef _WIN32
+#ifndef __APPLE__
 #include <sys/random.h>
+#endif
 #include <sys/resource.h>
 #endif
 #define ERR(n) ((int32_t)(UINT32_C(0x80020000)|(n)))
@@ -234,6 +236,17 @@ static ABI int32_t guest_getrusage(int who,GuestRusage *out) {
     compat_cpu_times(who,&user,&kernel);
     out->utime=(GuestTimeval){user/1000000,user%1000000};
     out->stime=(GuestTimeval){kernel/1000000,kernel%1000000};
+#elif defined(__APPLE__)
+    /* No RUSAGE_THREAD: the calling thread's CPU time is reported as user time. */
+    struct rusage r={0};
+    if (who==0) getrusage(RUSAGE_SELF,&r);
+    else {
+        struct timespec t;
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID,&t);
+        r.ru_utime=(struct timeval){t.tv_sec,(int)(t.tv_nsec/1000)};
+    }
+    out->utime=(GuestTimeval){r.ru_utime.tv_sec,r.ru_utime.tv_usec};
+    out->stime=(GuestTimeval){r.ru_stime.tv_sec,r.ru_stime.tv_usec};
 #else
     struct rusage r;
     getrusage(who==0 ? RUSAGE_SELF : RUSAGE_THREAD,&r);
@@ -249,6 +262,8 @@ static ABI int32_t guest_sysctl(const int32_t *name,uint32_t namelen,void *old,u
         if (!old || !oldlen) return fail_posix(EINVAL);
 #ifdef _WIN32
         if (compat_random(old,(size_t)*oldlen)) return fail_posix(EIO);
+#elif defined(__APPLE__)
+        arc4random_buf(old,(size_t)*oldlen);
 #else
         if (getrandom(old,(size_t)*oldlen,0)<0) return fail_posix(errno);
 #endif
