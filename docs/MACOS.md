@@ -37,7 +37,8 @@ environment variables are needed. Install the game from the launcher's **Install
 | Audio | works (Core Audio through SDL) |
 | Input | works: keyboard, PS5 controller |
 | Gameplay | tutorial played; leaving the tavern crashed once (thread cancel, fixed, awaiting a retest) |
-| Frame rate | 60 FPS in town and the first mission at a 720p render resolution (15-35 before fans were drawn as lists); native 1080p not yet measured, though 720p made no difference before the fix |
+| Frame rate | 60 FPS in town and the first mission at a 720p render resolution (15-35 before fans were drawn as lists); 60 FPS at native 1080p in a short run (about 45 s, up to 790 draws per frame), with one unexplained 1 s stall |
+| Graphics | good; the smear at the end of cutscenes is fixed (see [Rect list patches](#what-was-found-on-the-way)) |
 | Packaging | not started: runs from the build folder |
 | Updater | **not adapted**: it offers the upstream release (Windows ZIP or AppImage); do not install updates from a Mac build |
 
@@ -144,8 +145,21 @@ System Trace' --attach <pid> --time-limit 5s`) showed about 80,000 extra GPU pas
 On macOS [liverpool_to_vk.cpp](../gpu/shadps4/video_core/renderer_vulkan/liverpool_to_vk.cpp) maps fans and polygons to
 triangle lists; the rasterizer draws a non-indexed fan from one static index buffer and rewrites an indexed fan's
 indices into the stream buffer (splitting at restart indices), both in Vulkan's fan order (i+1, i+2, 0), so the
-provoking vertex and winding stay the same. Result: 60 FPS at 580-640 draws per frame, GPU wait 0% (measured at 720p; 1080p still to check). An indexed fan's
-indices are read from guest memory, so a GPU-written index buffer would be missed; none is known.
+provoking vertex and winding stay the same. Result: 60 FPS at 580-640 draws per frame, GPU wait 0% (measured at 720p),
+and 60 FPS at native 1080p with up to 790 draws per frame (about 45 s; one 1 s stall with no shader compile behind it,
+cause unknown). An indexed fan's indices are read from guest memory, so a GPU-written index buffer would be missed;
+none is known.
+
+**Rect list patches.** At the end of each cutscene a smear covered the upper-right of the screen for about 0.5 s, with a
+straight 45° edge from the top-left corner. The game cross-fades from a snapshot of the last frame (a full-screen quad
+list, `ps ec957f1d`, sampling `0x1058420000`), and the smear was in the snapshot. That snapshot is drawn by a rect list
+(`ps 51f1ddcf`) with 4 indices. Rect lists are emulated with tessellation at 3 control points per patch
+([vk_graphics_pipeline.cpp](../gpu/shadps4/video_core/renderer_vulkan/vk_graphics_pipeline.cpp)), so 4 indices is one
+patch and one spare vertex. Vulkan drops a partial patch; on MoltenVK the draw put garbage over the rect. On macOS
+`DrawRecord` now trims a rect list's draw count to whole patches, which removed the smear. The fan conversion, the guest
+vertices, blending and the snapshot's image upload had been ruled out first. MoltenVK rounding the patch count up is the
+likely mechanism, but it was not confirmed in MoltenVK's source. `DrawIndirectRecord` is not trimmed: an indirect rect
+list with a partial patch would still show this.
 
 **Thread cancel.** The game cancels short-lived worker threads. On Windows they have finished by then and the cancel
 returns ESRCH; on the slower Mac one was still running and the runtime stopped the game. This applies to every
