@@ -1035,6 +1035,10 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             draw_indexed = true;
             fan_buffer = fan_indices->Handle();
         }
+    } else if (regs.primitive_type == AmdGpu::PrimitiveType::RectList) {
+        // dcp: a rect is a patch of 3 vertices and the game draws its full-screen rects with 4. Vulkan drops the
+        // partial patch; on MoltenVK leaving it in draws garbage over the rect (the smear at the end of cutscenes).
+        draw_count -= draw_count % 3;
     }
 #endif
     scheduler.Record([=](vk::CommandBuffer cmdbuf) {
