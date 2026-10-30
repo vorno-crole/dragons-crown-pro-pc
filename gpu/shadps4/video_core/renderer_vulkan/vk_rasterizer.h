@@ -514,6 +514,19 @@ private:
     /// Submissions (prepared draws) kept alive until stage B reaches the position.
     std::deque<std::pair<u64, std::shared_ptr<const void>>> pipe_keepalive;
     std::unique_ptr<DrawPipe> draw_pipe;
+
+    // dcp: without VK_EXT_robustness2 nullDescriptor (MoltenVK), null buffers bind a zeroed stream buffer range and
+    // null images a cleared 1x1 placeholder of the binding's view type.
+    struct NullBufferRange {
+        vk::Buffer buffer;
+        u64 offset;
+        u64 size;
+    };
+    NullBufferRange NullBuffer();
+    vk::ImageView NullImageView(AmdGpu::ImageType type);
+    void InitNullImages();
+    std::array<VideoCore::UniqueImage, 3> null_images; ///< 1D, 2D, 3D
+    std::array<vk::UniqueImageView, 5> null_views;     ///< 1D, 1D array, 2D, 2D array, 3D
 };
 
 } // namespace Vulkan

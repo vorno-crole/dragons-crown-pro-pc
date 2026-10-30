@@ -78,6 +78,9 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     GpuProfiler::Init(instance, scheduler);
     InitAmdWaterFix(instance);
     water_diag.Init(instance.GetVendorID());
+    if (!instance.IsNullDescriptorSupported()) {
+        InitNullImages();
+    }
     if (DrawPipeWanted()) {
         constant_ring = std::make_unique<ConstantRing>(instance, scheduler);
         draw_pipe = std::make_unique<DrawPipe>(&RunDrawPacket, this);
@@ -1683,6 +1686,13 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
             host_buffers.emplace_back(host_buffer_info->buffer->Handle());
             host_offsets.push_back(host_buffer_info->offset + buffer.base_address -
                                    host_buffer_info->base_address);
+        } else if (!instance.IsNullDescriptorSupported()) {
+            const NullBufferRange null = NullBuffer();
+            host_buffers.emplace_back(null.buffer);
+            host_offsets.push_back(null.offset);
+            host_sizes.push_back(null.size);
+            host_strides.push_back(buffer.GetStride());
+            continue;
         } else {
             host_buffers.emplace_back(VK_NULL_HANDLE);
             host_offsets.push_back(0);
@@ -1925,7 +1935,12 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                 // Permutations compiled without enabled planes never read the buffer, so the
                 // declared binding is satisfied with a null descriptor instead of a copy.
                 if (Regs().clipper_control.user_clip_plane_enable == 0) {
-                    buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
+                    if (instance.IsNullDescriptorSupported()) {
+                        buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
+                    } else {
+                        const NullBufferRange null = NullBuffer();
+                        buffer_infos.emplace_back(null.buffer, null.offset, null.size);
+                    }
                 } else {
                     auto& vk_buffer = buffer_cache.GetStreamBuffer();
                     std::array<float, AmdGpu::NUM_CLIP_PLANES * 4> planes{};
@@ -1966,7 +1981,11 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                                      reinterpret_cast<const void*>(vsharp.base_address),
                                      memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize()));
             }
-            if (vsharp.base_address == 0 || vsharp.GetSize() == 0) {
+            if ((vsharp.base_address == 0 || vsharp.GetSize() == 0) &&
+                !instance.IsNullDescriptorSupported()) {
+                const NullBufferRange null = NullBuffer();
+                buffer_infos.emplace_back(null.buffer, null.offset, null.size);
+            } else if (vsharp.base_address == 0 || vsharp.GetSize() == 0) {
                 buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
             } else {
                 const u64 size = memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());
@@ -2198,7 +2217,10 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         const auto& desc = *desc_ptr;
         bool is_storage = desc.type == VideoCore::TextureCache::BindingType::Storage;
         if (!image_id) {
-            image_infos.emplace_back(VK_NULL_HANDLE, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
+            const vk::ImageView null_view = instance.IsNullDescriptorSupported()
+                                                ? vk::ImageView{}
+                                                : NullImageView(desc.view_info.type);
+            image_infos.emplace_back(VK_NULL_HANDLE, null_view, vk::ImageLayout::eGeneral);
         } else {
             if (auto& old_image = texture_cache.GetImage(image_id);
                 old_image.binding.needs_rebind) {
@@ -2418,6 +2440,11 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
     for (u32 i = 0; i < count; ++i) {
         const auto& entry = set.entries[i];
         if (!entry.id) {
+            // dcp: a placeholder needs the binding's view type, which only BindTextures knows.
+            if (!instance.IsNullDescriptorSupported()) {
+                ++texture_set_misses;
+                return false;
+            }
             continue;
         }
         const auto& image = texture_cache.GetImage(entry.id);
@@ -3407,6 +3434,103 @@ void Rasterizer::MarkPass(const GraphicsPipeline* pipeline, const RenderState& s
                                          : std::string{"-"},
                            vs.pgm_hash, ps ? ps->pgm_hash : 0);
     });
+}
+
+} // namespace Vulkan
+
+namespace Vulkan {
+
+// dcp: null descriptor placeholders (vk_rasterizer.h).
+Rasterizer::NullBufferRange Rasterizer::NullBuffer() {
+    static constexpr std::array<u8, 256> zeros{};
+    auto& stream = buffer_cache.GetStreamBuffer();
+    const u64 alignment = std::max<u64>(instance.UniformMinAlignment(), instance.StorageMinAlignment());
+    const u64 offset = stream.Copy(zeros.data(), zeros.size(), alignment);
+    return {stream.Handle(), offset, zeros.size()};
+}
+
+void Rasterizer::InitNullImages() {
+    const vk::Device device = instance.GetDevice();
+    const vk::ImageType types[] = {vk::ImageType::e1D, vk::ImageType::e2D, vk::ImageType::e3D};
+    for (size_t i = 0; i < null_images.size(); ++i) {
+        null_images[i] = VideoCore::UniqueImage{device, instance.GetAllocator()};
+        null_images[i].Create(vk::ImageCreateInfo{
+            .imageType = types[i],
+            .format = vk::Format::eR8G8B8A8Unorm,
+            .extent = {1, 1, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = vk::SampleCountFlagBits::e1,
+            .tiling = vk::ImageTiling::eOptimal,
+            .usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage |
+                     vk::ImageUsageFlagBits::eTransferDst,
+            .initialLayout = vk::ImageLayout::eUndefined,
+        });
+    }
+    // 1D, 1D array, 2D, 2D array, 3D: each over the image of its dimension.
+    const std::array<std::pair<vk::ImageViewType, size_t>, 5> views{{{vk::ImageViewType::e1D, 0},
+                                                                      {vk::ImageViewType::e1DArray, 0},
+                                                                      {vk::ImageViewType::e2D, 1},
+                                                                      {vk::ImageViewType::e2DArray, 1},
+                                                                      {vk::ImageViewType::e3D, 2}}};
+    const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+    for (size_t i = 0; i < views.size(); ++i) {
+        auto [result, view] = device.createImageViewUnique(vk::ImageViewCreateInfo{
+            .image = null_images[views[i].second].image,
+            .viewType = views[i].first,
+            .format = vk::Format::eR8G8B8A8Unorm,
+            .subresourceRange = range,
+        });
+        ASSERT_MSG(result == vk::Result::eSuccess, "Failed to create a null image view: {}", vk::to_string(result));
+        null_views[i] = std::move(view);
+    }
+    // Cleared to zero and left in the General layout the null bindings use.
+    scheduler.EndRendering();
+    const vk::CommandBuffer cmdbuf = scheduler.CommandBuffer();
+    for (const auto& image : null_images) {
+        const vk::ImageMemoryBarrier to_general{
+            .srcAccessMask = {},
+            .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eGeneral,
+            .image = image.image,
+            .subresourceRange = range,
+        };
+        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+                               to_general);
+        cmdbuf.clearColorImage(image.image, vk::ImageLayout::eGeneral, vk::ClearColorValue{}, range);
+        const vk::ImageMemoryBarrier to_shaders{
+            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+            .dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite,
+            .oldLayout = vk::ImageLayout::eGeneral,
+            .newLayout = vk::ImageLayout::eGeneral,
+            .image = image.image,
+            .subresourceRange = range,
+        };
+        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, {},
+                               {}, to_shaders);
+    }
+    LOG_WARNING(Render_Vulkan, "No null descriptors: null buffers and images bind zeroed placeholders");
+}
+
+vk::ImageView Rasterizer::NullImageView(AmdGpu::ImageType type) {
+    static std::atomic<u32> logged{};
+    if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+        LOG_WARNING(Render_Vulkan, "Null image binding ({}) replaced by a placeholder", AmdGpu::NameOf(type));
+    }
+    switch (type) {
+    case AmdGpu::ImageType::Color1D:
+        return *null_views[0];
+    case AmdGpu::ImageType::Color1DArray:
+        return *null_views[1];
+    case AmdGpu::ImageType::Color2DArray:
+    case AmdGpu::ImageType::Color2DMsaaArray:
+        return *null_views[3];
+    case AmdGpu::ImageType::Color3D:
+        return *null_views[4];
+    default:
+        return *null_views[2];
+    }
 }
 
 } // namespace Vulkan

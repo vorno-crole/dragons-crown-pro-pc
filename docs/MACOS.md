@@ -2,9 +2,9 @@
 
 **Status: phase 1 in progress.** `tools/build.sh` builds `build/cmake/macos/bin/dragons_crown_pro` on an Intel Mac.
 The launcher starts (Metal renderer) and installs the USA 1.00 package; `--check-imports` creates the game window and a
-Vulkan 1.4 instance on MoltenVK 1.4.2, then stops at device creation: **MoltenVK reports none of the robustness2
-features the renderer requires** (see [Blocker: robustness2](#blocker-robustness2)). The memory, thread and fault code
-compiles but has not run, and guest-visible heap objects still come from `malloc` (above 1 TiB). This page records what is known about running the port natively on an Intel
+Vulkan 1.4 instance on MoltenVK 1.4.2, and the Vulkan device (with placeholders for the robustness2 features MoltenVK lacks), and resolves the game's
+imports (see [Robustness2](#robustness2-worked-around)). The memory and fiber code passes
+`dcp-runtime-tests`; no guest code has run yet, and guest-visible heap objects still come from `malloc` (above 1 TiB). This page records what is known about running the port natively on an Intel
 Mac, the tools the build needs, what has been checked on real hardware, and the order of work. Apple silicon is out
 of scope for now: the game's own x86-64 code runs directly on the host CPU, so an Arm Mac would need Rosetta 2.
 Upstream shadPS4 runs that way, so an Intel build may later work under Rosetta, but nothing here has been tried there.
@@ -101,7 +101,13 @@ flat-shaded primitives.
 - **GPU assertion messages were lost.** `assert_fail_impl` called `_Exit` before the POSIX log reader drained the
   stderr pipe; it now flushes first (Linux had the same gap).
 
-### Blocker: robustness2
+### Robustness2 (worked around)
+
+**Worked around on macOS:** the three features are optional there and enabled only when present. Null buffers (storage,
+uniform and vertex) bind a zeroed 256-byte stream buffer range, and null images a cleared 1x1 placeholder of the
+binding's view type (`Rasterizer::NullBuffer` / `NullImageView`); the texture set memo misses on a null entry, since only
+`BindTextures` knows its view type. Out-of-bounds accesses follow `robustBufferAccess` 1.0. With this the device, the
+presenter and `--check-imports` complete. The original findings follow.
 
 `VK_EXT_robustness2` is listed, but on the RX 6600 XT with MoltenVK 1.4.2 `robustBufferAccess2`, `robustImageAccess2`
 and `nullDescriptor` are all **false** (`robustBufferAccess` 1.0 is true). The renderer asserts all three

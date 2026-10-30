@@ -145,6 +145,12 @@ public:
     }
 
     /// Returns true when VK_EXT_shader_stencil_export is supported
+    /// Returns true when null buffer and image descriptors may be bound (VK_EXT_robustness2). dcp: always on
+    /// Windows and Linux; not on MoltenVK, where the rasterizer binds placeholders instead.
+    bool IsNullDescriptorSupported() const {
+        return null_descriptor;
+    }
+
     bool IsShaderStencilExportSupported() const {
         return shader_stencil_export;
     }
@@ -533,6 +539,9 @@ private:
     bool vertex_input_dynamic_state{};
     bool list_restart{};
     bool provoking_vertex{};
+    bool robust_buffer_access2{};
+    bool robust_image_access2{};
+    bool null_descriptor{};
     bool shader_stencil_export{};
     bool image_load_store_lod{};
     bool amd_gcn_shader{};
