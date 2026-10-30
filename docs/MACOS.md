@@ -4,9 +4,8 @@
 The launcher starts (Metal renderer) and installs the USA 1.00 package; `--check-imports` creates the game window and a
 Vulkan 1.4 instance on MoltenVK 1.4.2, and the Vulkan device (with placeholders for the robustness2 features MoltenVK lacks), and resolves the game's
 imports (see [Robustness2](#robustness2-worked-around)). The memory and fiber code passes
-`dcp-runtime-tests`. The game itself boots on its own code (splash, threads, audio, pad, first pipelines) and stops when
-the buffer cache creates its first **sparse** buffer, which MoltenVK does not support
-(see [Blocker: sparse buffers](#blocker-sparse-buffers)). Guest-visible heap objects still come from `malloc` (above 1 TiB);
+`dcp-runtime-tests`. The game boots and draws its first screens on MoltenVK, with dense buffer arenas in place of sparse
+ones (see [Sparse buffers](#sparse-buffers-dense-arenas-on-macos)); it creates its save data. Longer play is untested. Guest-visible heap objects still come from `malloc` (above 1 TiB);
 nothing has failed from it yet. This page records what is known about running the port natively on an Intel
 Mac, the tools the build needs, what has been checked on real hardware, and the order of work. Apple silicon is out
 of scope for now: the game's own x86-64 code runs directly on the host CPU, so an Arm Mac would need Rosetta 2.
@@ -114,7 +113,14 @@ flat-shaded primitives.
 - **GPU assertion messages were lost.** `assert_fail_impl` called `_Exit` before the POSIX log reader drained the
   stderr pipe; it now flushes first (Linux had the same gap).
 
-### Blocker: sparse buffers
+### Sparse buffers (dense arenas on macOS)
+
+**Done:** on macOS the arenas are ordinary device-local buffers of 256 MiB pages (`DENSE_ARENAS` in
+[buffer_cache.h](../gpu/shadps4/video_core/buffer_cache/buffer_cache.h)), allocated in full when first used.
+`EnsureResident` only records residency and writes the BDA page table (`WritePageTable`); a migrating arena copies
+the resident ranges from the arenas it replaces and points the page table at the copy. The game then draws its first
+screens and creates its save data. Memory cost and migration copies are still to be measured. The original findings
+follow.
 
 The buffer cache keeps guest GPU memory in **sparse arenas**: buffers of up to 4 GiB per address-space page whose
 memory is bound where the game uses it (`vkQueueBindSparse`, [buffer_cache.cpp](../gpu/shadps4/video_core/buffer_cache/buffer_cache.cpp)

@@ -38,10 +38,19 @@ class PageManager;
 
 class BufferCache {
     static constexpr u64 ADDRESS_SPACE_BITS = 40;
+#ifdef __APPLE__
+    // dcp: MoltenVK has no sparse buffers. Arenas are ordinary device buffers ("dense arenas") of
+    // 256 MiB pages, allocated in full when first used; residency is bookkeeping only.
+    static constexpr bool DENSE_ARENAS = true;
+    static constexpr u64 MAX_ARENA_PAGE_BITS = 28;
+    static constexpr u64 MIN_ARENA_PAGE_BITS = 28;
+#else
     // dcp: arena pages are 4 GiB unless the driver's buffer size limit is lower (AMD's
     // Windows driver: 2 GiB); an arena spans up to two pages, so they shrink to half the limit.
+    static constexpr bool DENSE_ARENAS = false;
     static constexpr u64 MAX_ARENA_PAGE_BITS = 32;
     static constexpr u64 MIN_ARENA_PAGE_BITS = 30;
+#endif
     static constexpr u64 MAX_ARENA_PAGES = u64{1} << (ADDRESS_SPACE_BITS - MIN_ARENA_PAGE_BITS);
     static constexpr u64 MIN_BLOCK_SIZE = 16_KB;
 
@@ -129,6 +138,9 @@ private:
     const Buffer* GetArena(u64 first_block, u64 last_block);
 
     void EnsureResident(const Buffer* arena, u64 first_block, u64 last_block);
+
+    /// Points the BDA page table entries of the block ranges at their place in `arena`.
+    void WritePageTable(const Buffer* arena, const IntervalList<Interval>& ranges);
 
     void DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size);
 
