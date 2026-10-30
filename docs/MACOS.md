@@ -37,7 +37,7 @@ environment variables are needed. Install the game from the launcher's **Install
 | Audio | works (Core Audio through SDL) |
 | Input | works: keyboard, PS5 controller |
 | Gameplay | tutorial played; leaving the tavern crashed once (thread cancel, fixed, awaiting a retest) |
-| Frame rate | 60 FPS in town and the first mission (15-35 before fans were drawn as lists) |
+| Frame rate | 60 FPS in town and the first mission at a 720p render resolution (15-35 before fans were drawn as lists); native 1080p not yet measured, though 720p made no difference before the fix |
 | Packaging | not started: runs from the build folder |
 | Updater | **not adapted**: it offers the upstream release (Windows ZIP or AppImage); do not install updates from a Mac build |
 
@@ -144,7 +144,7 @@ System Trace' --attach <pid> --time-limit 5s`) showed about 80,000 extra GPU pas
 On macOS [liverpool_to_vk.cpp](../gpu/shadps4/video_core/renderer_vulkan/liverpool_to_vk.cpp) maps fans and polygons to
 triangle lists; the rasterizer draws a non-indexed fan from one static index buffer and rewrites an indexed fan's
 indices into the stream buffer (splitting at restart indices), both in Vulkan's fan order (i+1, i+2, 0), so the
-provoking vertex and winding stay the same. Result: 60 FPS at 580-640 draws per frame, GPU wait 0%. An indexed fan's
+provoking vertex and winding stay the same. Result: 60 FPS at 580-640 draws per frame, GPU wait 0% (measured at 720p; 1080p still to check). An indexed fan's
 indices are read from guest memory, so a GPU-written index buffer would be missed; none is known.
 
 **Thread cancel.** The game cancels short-lived worker threads. On Windows they have finished by then and the cancel
