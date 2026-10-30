@@ -539,7 +539,7 @@ int main(int argc, char **argv) {
     dcp_main_thread_serve();
 }
 typedef struct { const DcpLauncherConfig *config; DcpLauncherResult result; } LauncherJob;
-static void run_launcher(void *p) { LauncherJob *job = p; job->result = dcp_launcher_run(job->config); }
+static void run_launcher(void *p); /* after main: the launcher tests read this file's call order */
 #define main loader_main
 static
 #endif
@@ -1040,3 +1040,6 @@ int main(int argc, char **argv) {
 #endif
     fail("entry unexpectedly returned");
 }
+#ifdef __APPLE__
+static void run_launcher(void *p) { LauncherJob *job = p; job->result = dcp_launcher_run(job->config); }
+#endif

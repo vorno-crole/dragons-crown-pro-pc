@@ -1,4 +1,4 @@
-/* Focused Linux tests of the runtime's memory and fiber layers: the guest address range, mapping and protection
+/* Focused Linux and macOS tests of the runtime's memory and fiber layers: the guest address range, mapping and protection
  * through the PS4 kernel entry points, and libSceFiber's stack switching. No game files, no window. */
 #define _GNU_SOURCE
 #include "runtime.h"
@@ -12,6 +12,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <xmmintrin.h>
+#ifdef __APPLE__
+#define thread_create mach_thread_create /* <mach/mach.h> declares one; this file has its own */
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#undef thread_create
+#endif
 
 #define USER_MIN UINT64_C(0x1000000000)
 #define USER_MAX UINT64_C(0xfc00000000)
@@ -35,6 +41,23 @@ typedef int32_t (ABI *Protect)(const void *address, uint64_t size, int prot);
 typedef int32_t (ABI *AllocateDirect)(int64_t low, int64_t high, uint64_t size, uint64_t alignment, int type, int64_t *out);
 typedef int32_t (ABI *MapDirect)(void **address, uint64_t size, int prot, int flags, int64_t physical, uint64_t alignment);
 
+#ifdef __APPLE__
+/* The permissions of the region holding `address` in /proc/self/maps form ("rw-p"), or an empty string. Shared ("s")
+ * means inherited by share, as the runtime maps guest views of its pool; reservations and stacks are private. */
+static void permissions_at(uintptr_t address, char out[8]) {
+    out[0] = 0;
+    mach_vm_address_t start = address;
+    mach_vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    if (mach_vm_region(mach_task_self(), &start, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count, &object) ||
+        start > address)
+        return;
+    snprintf(out, 8, "%c%c%c%c", (info.protection & VM_PROT_READ) ? 'r' : '-', (info.protection & VM_PROT_WRITE) ? 'w' : '-',
+             (info.protection & VM_PROT_EXECUTE) ? 'x' : '-', info.inheritance == VM_INHERIT_SHARE ? 's' : 'p');
+}
+#else
 /* The /proc/self/maps line holding `address`: its permissions ("rw-p"), or an empty string. */
 static void permissions_at(uintptr_t address, char out[8]) {
     out[0] = 0;
@@ -50,6 +73,7 @@ static void permissions_at(uintptr_t address, char out[8]) {
     }
     if (maps) fclose(maps);
 }
+#endif
 
 static void test_reservation_failure(void) {
     pid_t child = fork();
@@ -78,8 +102,14 @@ static void test_reservation(void) {
     void *hinted = mmap((void *)(USER_MIN + 0x20000000), 1 << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     CHECK(hinted != MAP_FAILED && ((uintptr_t)hinted < USER_MIN || (uintptr_t)hinted >= USER_MAX));
     if (hinted != MAP_FAILED) munmap(hinted, 1 << 20);
+#ifdef __APPLE__
+    /* macOS has no MAP_FIXED_NOREPLACE: a fixed Mach allocation is the same request. */
+    mach_vm_address_t fixed = USER_MIN + 0x20000000;
+    CHECK(mach_vm_allocate(mach_task_self(), &fixed, 1 << 20, VM_FLAGS_FIXED) == KERN_NO_SPACE);
+#else
     void *fixed = mmap((void *)(USER_MIN + 0x20000000), 1 << 20, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
     CHECK(fixed == MAP_FAILED && errno == EEXIST);
+#endif
     void *low = runtime_low_map(1 << 20, PROT_READ | PROT_WRITE);
     CHECK(low && (uintptr_t)low >= UINT64_C(0x800000000) && (uintptr_t)low < USER_MIN);
 }

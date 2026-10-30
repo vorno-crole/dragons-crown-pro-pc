@@ -24,6 +24,10 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 #endif
 /* sceKernelGetDirectMemorySize on retail PS4: 5056 MiB. DCP_DMEM_MB raises it. */
 static uint64_t pool_size_bytes(void) {
@@ -78,7 +82,9 @@ static void read_lock(void) { if (!exclusive_depth) pthread_rwlock_rdlock(&lock)
 static void read_unlock(void) { if (!exclusive_depth) pthread_rwlock_unlock(&lock); }
 static Block blocks[LIMIT];
 static Vma *vmas; static size_t vma_count, vma_capacity;
-#ifndef _WIN32
+#if defined(__APPLE__)
+static mach_port_t pool_entry=MACH_PORT_NULL; /* Mach memory entry of the pool: every guest view maps it */
+#elif !defined(_WIN32)
 static int pool_fd=-1;
 #endif
 static unsigned char *backing_base; /* second view of the pool: host writes bypass guest/GPU page protection */
@@ -269,24 +275,38 @@ static int pool(void) {
     return 0;
 }
 #else
+#ifdef __APPLE__
+/* Direct memory occupies [0,POOL_SIZE) of the pool, flexible memory [POOL_SIZE,+FLEX_SPAN). No memfd, and POSIX shared
+ * memory can never be mapped executable on macOS (its maximum protection is read/write): the pool is a named Mach memory
+ * object, as sparse as a memfd, and every view of it (the host's and the guest's) aliases the same pages and may be
+ * executable. An entry made from an existing allocation would not do: views at an offset into it do not alias. */
+static int pool(void) {
+    if (backing_base) return 0;
+    runtime_memory_reserve();
+    const uint64_t bytes=POOL_SIZE+FLEX_SPAN;
+    memory_object_size_t entry_size=bytes;
+    mach_vm_address_t view=0;
+    kern_return_t kr=mach_make_memory_entry_64(mach_task_self(),&entry_size,0,MAP_MEM_NAMED_CREATE|VM_PROT_ALL,&pool_entry,
+                                               MACH_PORT_NULL);
+    if (kr==KERN_SUCCESS && entry_size>=bytes)
+        kr=mach_vm_map(mach_task_self(),&view,bytes,0,VM_FLAGS_ANYWHERE,pool_entry,0,FALSE,VM_PROT_READ|VM_PROT_WRITE,
+                       VM_PROT_ALL,VM_INHERIT_SHARE);
+    if (kr!=KERN_SUCCESS || entry_size<bytes) {
+        fprintf(stderr,"Runtime: cannot create %" PRIu64 " MiB of guest memory (%s)\n",bytes>>20,mach_error_string(kr));
+        return -1;
+    }
+    backing_base=(unsigned char *)(uintptr_t)view;
+    return 0;
+}
+#else
 /* Direct memory occupies [0,POOL_SIZE) of the memfd, flexible memory [POOL_SIZE,+FLEX_SPAN). */
 static int pool(void) {
     if (pool_fd>=0) return 0;
     runtime_memory_reserve();
     const uint64_t bytes=POOL_SIZE+FLEX_SPAN;
-#ifdef __APPLE__
-    /* No memfd: an unlinked POSIX shared memory object is just as sparse, and is mapped the same way. */
-    char name[64];
-    snprintf(name,sizeof(name),"/dcp-guest-memory-%d",(int)getpid());
-    const int fd=shm_open(name,O_RDWR|O_CREAT|O_EXCL,0600);
-    if (fd>=0) { shm_unlink(name); fcntl(fd,F_SETFD,FD_CLOEXEC); }
-    const char *create="shm_open";
-#else
     const int fd=memfd_create("dcp-guest-memory", MFD_CLOEXEC);
-    const char *create="memfd_create";
-#endif
     void *view=MAP_FAILED;
-    if (fd<0) fprintf(stderr,"Runtime: cannot create %" PRIu64 " MiB of guest memory (%s: %s)\n",bytes>>20,create,strerror(errno));
+    if (fd<0) fprintf(stderr,"Runtime: cannot create %" PRIu64 " MiB of guest memory (memfd_create: %s)\n",bytes>>20,strerror(errno));
     else if (ftruncate(fd,(off_t)bytes)) fprintf(stderr,"Runtime: cannot size %" PRIu64 " MiB of guest memory (ftruncate: %s)\n",bytes>>20,strerror(errno));
     else if ((view=mmap(NULL,bytes,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_NORESERVE,fd,0))==MAP_FAILED)
         fprintf(stderr,"Runtime: cannot map %" PRIu64 " MiB of guest memory (mmap: %s)\n",bytes>>20,strerror(errno));
@@ -298,6 +318,7 @@ static int pool(void) {
     backing_base=view;
     return 0;
 }
+#endif
 /* The whole PS4 user range is claimed up front, so a host allocation can never land inside it;
  * every later guest mapping replaces part of this reservation (MAP_FIXED stays inside it). */
 void runtime_memory_reserve(void) {
@@ -316,9 +337,21 @@ static int in_user_range(uintptr_t address, uint64_t size) {
 }
 static int host_map(uintptr_t address, uint64_t size, int prot, int reserved, uint64_t phys) {
     if (!in_user_range(address,size)) return -1;
+#ifdef __APPLE__
+    /* A view of the pool's memory entry replaces that part of the reservation (PROT_* equal VM_PROT_* on Darwin). */
+    if (!reserved) {
+        mach_vm_address_t at=address;
+        const kern_return_t kr=mach_vm_map(mach_task_self(),&at,size,0,VM_FLAGS_FIXED|VM_FLAGS_OVERWRITE,pool_entry,phys,FALSE,
+                                           (vm_prot_t)prot,VM_PROT_ALL,VM_INHERIT_SHARE);
+        if (kr!=KERN_SUCCESS) fprintf(stderr,"Runtime: host mapping of %p (+0x%" PRIx64 ") failed: %s\n",(void *)address,size,mach_error_string(kr));
+        return kr==KERN_SUCCESS ? 0 : -1;
+    }
+    void *mapped = mmap((void *)address,size,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE|MAP_FIXED,-1,0);
+#else
     void *mapped = !reserved
         ? mmap((void *)address,size,prot,MAP_SHARED|MAP_FIXED,pool_fd,(off_t)phys)
         : mmap((void *)address,size,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE|MAP_FIXED,-1,0);
+#endif
     if (mapped==MAP_FAILED) fprintf(stderr,"Runtime: host mapping of %p (+0x%" PRIx64 ") failed: %s\n",(void *)address,size,strerror(errno));
     return mapped==MAP_FAILED ? -1 : 0;
 }

@@ -118,6 +118,8 @@ if (WIN32)
     target_link_libraries(dcpgpu PUBLIC ws2_32 bcrypt ntdll synchronization winmm)
 elseif (APPLE)
     target_compile_options(dcpgpu PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/shim/dcp_mac_compat.h)
+    # assert.cpp's weak runtime_log_flush: ld64 only leaves a weak reference undefined (tests) when told to.
+    target_link_options(dcpgpu INTERFACE -Wl,-U,_runtime_log_flush)
     find_package(Threads REQUIRED)
     target_link_libraries(dcpgpu PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 else()
