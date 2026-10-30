@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -20,6 +21,7 @@
 #include "dcp_toggles.h"
 #include "dcp_write_log.h"
 #include "dcpgpu.h"
+#include "main_thread_mac.h"
 #include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "common/path_util.h"
@@ -176,7 +178,8 @@ s32 PS4_SYSV_ABI sceKernelUsleep(u32 microseconds) {
 } // namespace Libraries::Kernel
 
 namespace {
-// SDL video must be driven from one thread: the window lives on its own host thread.
+// SDL video must be driven from one thread: the window lives on its own host thread (on macOS the main
+// thread, which AppKit requires; the loader runs elsewhere there).
 std::thread g_window_thread;
 std::mutex g_window_mutex;
 std::condition_variable g_window_cv;
@@ -195,7 +198,7 @@ extern "C" int dcpgpu_init(const DcpGpuConfig* config) {
     Core::Emulator::FillElfInfo(*config);
     const std::string title = config->title ? config->title : "Dragon's Crown Pro";
     const s32 width = config->width, height = config->height;
-    g_window_thread = std::thread([title, width, height] {
+    auto window_loop = [title, width, height] {
         Common::SetCurrentThreadName("dcp:window");
         auto* window = new Frontend::WindowSDL(width, height, title.c_str());
         {
@@ -212,8 +215,15 @@ extern "C" int dcpgpu_init(const DcpGpuConfig* config) {
         runtime_log_finalize();
         runtime_log_flush();
         std::_Exit(0);
-    });
+    };
+#ifdef __APPLE__
+    static std::function<void()> main_thread_window;
+    main_thread_window = window_loop;
+    dcp_main_thread_run([](void*) { main_thread_window(); }, nullptr, 0);
+#else
+    g_window_thread = std::thread(window_loop);
     g_window_thread.detach();
+#endif
     {
         std::unique_lock lock{g_window_mutex};
         g_window_cv.wait(lock, [] { return g_window_ready; });

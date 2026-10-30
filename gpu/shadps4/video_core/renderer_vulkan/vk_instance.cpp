@@ -324,6 +324,10 @@ bool Instance::CreateDevice() {
         return false;
     };
 
+#ifdef __APPLE__
+    // dcp: a portability driver (MoltenVK) that advertises the subset extension must have it enabled.
+    add_extension("VK_KHR_portability_subset");
+#endif
     // Required
     ASSERT_MSG(add_extension(VK_KHR_SWAPCHAIN_EXTENSION_NAME),
                "Required Vulkan extension unavailable: {}", VK_KHR_SWAPCHAIN_EXTENSION_NAME);

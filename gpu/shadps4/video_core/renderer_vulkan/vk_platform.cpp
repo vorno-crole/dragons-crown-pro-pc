@@ -205,6 +205,11 @@ std::vector<const char*> GetInstanceExtensions(Frontend::WindowSystemType window
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
 
+#ifdef __APPLE__
+    // dcp: MoltenVK is a portability driver, which the loader only lists to instances that ask for it.
+    extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+#endif
+
     // Sanitize extension list
     std::erase_if(extensions, [&](const char* extension) -> bool {
         const auto it =
@@ -423,6 +428,9 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
 
     vk::StructureChain<vk::InstanceCreateInfo, vk::LayerSettingsCreateInfoEXT> instance_ci_chain = {
         vk::InstanceCreateInfo{
+#ifdef __APPLE__
+            .flags = vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR,
+#endif
             .pApplicationInfo = &application_info,
             .enabledLayerCount = static_cast<u32>(layers.size()),
             .ppEnabledLayerNames = layers.data(),

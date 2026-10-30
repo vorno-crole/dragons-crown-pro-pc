@@ -40,6 +40,7 @@
 #include <sys/ucontext.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
+#include "main_thread_mac.h"
 #undef round_page /* <mach/vm_page_size.h> macros; this file has its own round_page */
 #undef trunc_page
 /* Thread state in a signal context: Darwin keeps it behind a pointer, by register name. */
@@ -72,7 +73,7 @@ static uint64_t module_count;
 static int entered_game;
 static int gpu_enabled;
 
-static void fail(const char *message) { fprintf(stderr, "ERROR: %s\n", message); exit(1); }
+static __attribute__((noreturn)) void fail(const char *message) { fprintf(stderr, "ERROR: %s\n", message); exit(1); }
 /* For failures after the GPU threads started: exit() would run destructors under them. */
 static void fail_running(const char *message) { fprintf(stderr, "ERROR: %s\n", message); runtime_log_flush(); _exit(1); }
 static uint64_t read64(FILE *f) {
@@ -517,6 +518,31 @@ static const char *command_line(int argc, char **argv) {
     return line;
 #endif
 }
+#ifdef __APPLE__
+/* AppKit (SDL video) needs the main thread: the loader runs on a thread of its own and hands the launcher and
+ * the game window to the main thread (main_thread_mac.c). */
+typedef struct { int argc; char **argv; } LoaderArgs;
+static int loader_main(int argc, char **argv);
+static void *loader_thread(void *p) {
+    const LoaderArgs *args = p;
+    exit(loader_main(args->argc, args->argv));
+}
+int main(int argc, char **argv) {
+    static LoaderArgs args;
+    args = (LoaderArgs){argc, argv};
+    pthread_attr_t attr;
+    pthread_t thread;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 16 * 1024 * 1024); /* as the main thread's stack on Windows */
+    if (pthread_create(&thread, &attr, loader_thread, &args)) { fputs("STOP: cannot start the loader thread\n", stderr); return 1; }
+    pthread_attr_destroy(&attr);
+    dcp_main_thread_serve();
+}
+typedef struct { const DcpLauncherConfig *config; DcpLauncherResult result; } LauncherJob;
+static void run_launcher(void *p) { LauncherJob *job = p; job->result = dcp_launcher_run(job->config); }
+#define main loader_main
+static
+#endif
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     /* tools\build.ps1: the launcher's boot image builder on a prepared game folder, without starting anything. */
@@ -614,7 +640,13 @@ int main(int argc, char **argv) {
 #endif
         DcpLauncherConfig launcher={app0,paths.image_dir,user_dir,settings_file,log_folder,skip_launcher,force_launcher,check_graphics,
                                     game_process,log_started ? log_path : NULL};
+#ifdef __APPLE__
+        LauncherJob launcher_job={&launcher,DCP_LAUNCHER_QUIT};
+        dcp_main_thread_run(run_launcher,&launcher_job,1);
+        DcpLauncherResult launched=launcher_job.result;
+#else
         DcpLauncherResult launched=dcp_launcher_run(&launcher);
+#endif
         runtime_log_set_detailed(dcp_detailed_logging(settings_file));
         if (launched==DCP_LAUNCHER_QUIT) { runtime_log_mark_clean_exit(); exit(0); }
         if (launched==DCP_LAUNCHER_BLOCKED) exit(1);

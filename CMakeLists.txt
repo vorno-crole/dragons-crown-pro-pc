@@ -90,6 +90,10 @@ set(DCP_RUNTIME_SOURCES
     src/runtime_services.c
     src/runtime_thread.c
     src/runtime_time.c)
+if (APPLE)
+    # AppKit needs the main thread: the launcher and the game window are run there (src/main_thread_mac.h).
+    list(APPEND DCP_RUNTIME_SOURCES src/main_thread_mac.c)
+endif()
 # The built-in system fonts are assembled into runtime_font.c (.incbin): rebuild it when a font changes.
 set(DCP_NOTO_SANS ${CMAKE_SOURCE_DIR}/third_party/fonts/NotoSans-Regular.ttf)
 set(DCP_NOTO_SANS_TC ${CMAKE_SOURCE_DIR}/third_party/fonts/NotoSansTC-Regular.otf)
@@ -146,6 +150,23 @@ add_custom_command(TARGET dragons_crown_pro POST_BUILD
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/launcher/sponsor-heart.png"
         "$<TARGET_FILE_DIR:dragons_crown_pro>/assets/launcher/sponsor-heart.png"
     VERBATIM)
+
+if (APPLE)
+    # MoltenVK and its ICD next to the game: the renderer points the Vulkan loader at the executable's folder
+    # (vk_platform.cpp), so no system MoltenVK is used. 1.4.2 or newer: Homebrew's 1.2 reports Vulkan 1.2.
+    set(DCP_MOLTENVK "" CACHE FILEPATH "libMoltenVK.dylib to place next to the game (docs/MACOS.md)")
+    if (NOT EXISTS "${DCP_MOLTENVK}")
+        message(FATAL_ERROR "Set DCP_MOLTENVK to a libMoltenVK.dylib, 1.4.2 or newer (docs/MACOS.md).")
+    endif()
+    file(WRITE ${CMAKE_BINARY_DIR}/generated/MoltenVK_icd.json
+        "{\n    \"file_format_version\": \"1.0.0\",\n    \"ICD\": {\n        \"library_path\": \"./libMoltenVK.dylib\",\n"
+        "        \"api_version\": \"1.4.0\",\n        \"is_portability_driver\": true\n    }\n}\n")
+    add_custom_command(TARGET dragons_crown_pro POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${DCP_MOLTENVK}" "$<TARGET_FILE_DIR:dragons_crown_pro>/libMoltenVK.dylib"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/generated/MoltenVK_icd.json"
+            "$<TARGET_FILE_DIR:dragons_crown_pro>/MoltenVK_icd.json"
+        VERBATIM)
+endif()
 
 if (WIN32)
     # GUI-subsystem processes start with closed standard streams; the log must still work. Not part of the default build.

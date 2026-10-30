@@ -43,7 +43,10 @@ if [[ $platform == macos ]]; then
     export PKG_CONFIG_PATH=$brew_prefix/opt/openssl@3/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}
     vma_header=$root/build/macos-deps/include/vma/vk_mem_alloc.h
     [[ -f $vma_header ]] || die "Missing $vma_header (docs/MACOS.md: VMA v3.4.0)"
-    cmake_platform_args+=("-DCMAKE_PREFIX_PATH=$brew_prefix;$brew_prefix/opt/openssl@3;$root/build/macos-deps")
+    moltenvk=${DCP_MOLTENVK:-$root/build/macos-deps/lib/libMoltenVK.dylib}
+    [[ -f $moltenvk ]] || die "Missing $moltenvk (docs/MACOS.md: MoltenVK 1.4.2; or set DCP_MOLTENVK)"
+    cmake_platform_args+=("-DCMAKE_PREFIX_PATH=$brew_prefix;$brew_prefix/opt/openssl@3;$root/build/macos-deps"
+                          "-DDCP_MOLTENVK=$moltenvk")
 else
     cc=${CC:-clang} cxx=${CXX:-clang++}
 fi

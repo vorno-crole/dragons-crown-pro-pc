@@ -629,7 +629,11 @@ private:
         c.branding.title = "DRAGON'S CROWN PRO";
         c.branding.subtitle_color = kAccent;
         c.branding.subtitle_segments = {
+#ifdef __APPLE__
+            {"MAC (INTEL) PORT   \xC2\xB7   ", ""},
+#else
             {"PC PORT   \xC2\xB7   ", ""},
+#endif
             {"v" DCP_PORT_VERSION "   \xC2\xB7   ", ""},
             {"BY SAULOB", kAuthorUrl},
         };

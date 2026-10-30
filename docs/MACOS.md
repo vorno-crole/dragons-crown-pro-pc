@@ -1,7 +1,9 @@
 # macOS port (Intel)
 
-**Status: phase 1 in progress.** `tools/build.sh` builds `build/cmake/macos/bin/dragons_crown_pro` on an Intel Mac and
-the launcher starts (Metal renderer); the game has not been installed or booted yet. The memory, thread and fault code
+**Status: phase 1 in progress.** `tools/build.sh` builds `build/cmake/macos/bin/dragons_crown_pro` on an Intel Mac.
+The launcher starts (Metal renderer) and installs the USA 1.00 package; `--check-imports` creates the game window and a
+Vulkan 1.4 instance on MoltenVK 1.4.2, then stops at device creation: **MoltenVK reports none of the robustness2
+features the renderer requires** (see [Blocker: robustness2](#blocker-robustness2)). The memory, thread and fault code
 compiles but has not run, and guest-visible heap objects still come from `malloc` (above 1 TiB). This page records what is known about running the port natively on an Intel
 Mac, the tools the build needs, what has been checked on real hardware, and the order of work. Apple silicon is out
 of scope for now: the game's own x86-64 code runs directly on the host CPU, so an Arm Mac would need Rosetta 2.
@@ -79,6 +81,38 @@ real ES/GS draws are skipped with a warning ([vk_pipeline_cache.cpp](../gpu/shad
 Whether Dragon's Crown Pro issues any GS draws is still to be seen in the log. The missing optional extensions may
 show up as small visual differences: borders on samplers with custom colours, depth clipping, provoking vertex on
 flat-shaded primitives.
+
+## Found while bringing it up
+
+- **AppKit needs the main thread.** SDL video only initialises on the process's main thread on macOS ("No available
+  video device" elsewhere), but the loader ran the game on the main thread and the game window on a thread of its
+  own. On macOS `main` now starts the loader on a 16 MiB thread and the main thread serves jobs
+  ([main_thread_mac.c](../src/main_thread_mac.c)): the launcher runs there and waits, the game window's event loop runs
+  there for good.
+- **MoltenVK is a portability driver.** The instance needs `VK_KHR_portability_enumeration` and
+  `eEnumeratePortabilityKHR`, and the device `VK_KHR_portability_subset`, or the loader reports
+  `ErrorIncompatibleDriver`. Upstream's Apple code also sets `VK_DRIVER_FILES` to the executable's folder, which
+  overrides `VK_ICD_FILENAMES`: MoltenVK and its ICD are copied next to the game (`DCP_MOLTENVK`, default
+  `build/macos-deps/lib/libMoltenVK.dylib`).
+- **The game window needs a Metal view.** `window.cpp` knew only the windows, x11 and wayland SDL drivers; on `cocoa`
+  the surface is `SDL_Metal_GetLayer(SDL_Metal_CreateView(window))`, as upstream shadPS4 does.
+- **GPU assertion messages were lost.** `assert_fail_impl` called `_Exit` before the POSIX log reader drained the
+  stderr pipe; it now flushes first (Linux had the same gap).
+
+### Blocker: robustness2
+
+`VK_EXT_robustness2` is listed, but on the RX 6600 XT with MoltenVK 1.4.2 `robustBufferAccess2`, `robustImageAccess2`
+and `nullDescriptor` are all **false** (`robustBufferAccess` 1.0 is true). The renderer asserts all three
+([vk_instance.cpp](../gpu/shadps4/video_core/renderer_vulkan/vk_instance.cpp)). The extension probe earlier on this page
+checked extensions, not features, so it missed this.
+
+- `nullDescriptor` is the one with real work behind it: the rasterizer writes null buffers and image views into
+  descriptors ([vk_rasterizer.cpp](../gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp), about four sites).
+  Without it, those need a small dummy buffer and dummy image views of each view type, as shadPS4 used before it
+  required the feature.
+- `robustBufferAccess2` / `robustImageAccess2` change what out-of-bounds shader accesses return (zero, versus any
+  value in the buffer under 1.0 robustness). Dropping them risks wrong pixels, not crashes; whether this game reads
+  out of bounds is unknown.
 
 ## Learnings from SpeedBreaker
 

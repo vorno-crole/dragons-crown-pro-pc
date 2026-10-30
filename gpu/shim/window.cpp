@@ -84,6 +84,13 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
         window_info.render_surface = SDL_GetPointerProperty(wp, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
     } else
 #endif
+#ifdef __APPLE__
+    if (driver && !std::strcmp(driver, "cocoa")) {
+        // MoltenVK renders to the CAMetalLayer of a Metal view on the window (as upstream shadPS4 does).
+        window_info.type = WindowSystemType::Metal;
+        window_info.render_surface = SDL_Metal_GetLayer(SDL_Metal_CreateView(window));
+    } else
+#endif
     if (driver && !std::strcmp(driver, "x11")) {
         window_info.type = WindowSystemType::X11;
         window_info.display_connection = SDL_GetPointerProperty(wp, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr);
