@@ -835,7 +835,14 @@ EmitContext::BufferSpv EmitContext::DefineBuffer(bool is_written, bool is_cohere
     } else if (is_coherent) {
         // The guest V# MTYPE marks this buffer as shared between invocations;
         // Coherent forbids caching its accesses in registers across barriers.
+#ifdef __APPLE__
+        // dcp: MoltenVK turns it into MSL `coherent device`, which Apple's compiler for AMD GPUs fails on
+        // ("Compiler encountered an internal error", RX 6600 XT, macOS 15.4). Metal's device barriers still order
+        // the accesses.
+        (void)id;
+#else
         Decorate(id, spv::Decoration::Coherent);
+#endif
     }
     switch (buffer_type) {
     case BufferType::GdsBuffer:

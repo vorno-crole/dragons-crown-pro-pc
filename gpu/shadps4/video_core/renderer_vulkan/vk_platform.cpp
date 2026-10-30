@@ -273,13 +273,10 @@ static void LogAvailableLayers() {
     }
 }
 
-vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool enable_validation,
-                                  bool enable_crash_diagnostic) {
-    LOG_INFO(Render_Vulkan, "Creating vulkan instance");
-
 #if defined(__APPLE__)
-    // Initialize the environment with the path to the included ICD, so that the loader will
-    // find it.
+// Initialize the environment with the path to the included ICD, so that the loader will find it. dcp: before any
+// instance, the launcher's probe included (CreateProbeInstance).
+static void UseBundledDriver() {
     static const auto icd_path = [] {
         char path[PATH_MAX];
         u32 length = PATH_MAX;
@@ -287,6 +284,15 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
         return std::filesystem::path(path).parent_path();
     }();
     setenv("VK_DRIVER_FILES", icd_path.c_str(), true);
+}
+#endif
+
+vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool enable_validation,
+                                  bool enable_crash_diagnostic) {
+    LOG_INFO(Render_Vulkan, "Creating vulkan instance");
+
+#if defined(__APPLE__)
+    UseBundledDriver();
 #endif
 
     static vk::detail::DynamicLoader dl;
@@ -485,7 +491,17 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
 // dcp: init(Instance) must run in this file, the only one that defines VK_USE_PLATFORM_*.
 vk::ResultValue<vk::UniqueInstance> CreateProbeInstance() {
     const vk::ApplicationInfo application{.apiVersion = TargetVulkanApiVersion};
+#ifdef __APPLE__
+    // MoltenVK is a portability driver: listed only to instances that ask (as in CreateInstance).
+    UseBundledDriver();
+    static const char* const portability = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+    auto created = vk::createInstanceUnique({.flags = vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR,
+                                             .pApplicationInfo = &application,
+                                             .enabledExtensionCount = 1,
+                                             .ppEnabledExtensionNames = &portability});
+#else
     auto created = vk::createInstanceUnique({.pApplicationInfo = &application});
+#endif
     if (created.result == vk::Result::eSuccess) {
         VULKAN_HPP_DEFAULT_DISPATCHER.init(*created.value);
     }

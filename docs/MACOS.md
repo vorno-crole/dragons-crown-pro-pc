@@ -4,7 +4,10 @@
 The launcher starts (Metal renderer) and installs the USA 1.00 package; `--check-imports` creates the game window and a
 Vulkan 1.4 instance on MoltenVK 1.4.2, and the Vulkan device (with placeholders for the robustness2 features MoltenVK lacks), and resolves the game's
 imports (see [Robustness2](#robustness2-worked-around)). The memory and fiber code passes
-`dcp-runtime-tests`; no guest code has run yet, and guest-visible heap objects still come from `malloc` (above 1 TiB). This page records what is known about running the port natively on an Intel
+`dcp-runtime-tests`. The game itself boots on its own code (splash, threads, audio, pad, first pipelines) and stops when
+the buffer cache creates its first **sparse** buffer, which MoltenVK does not support
+(see [Blocker: sparse buffers](#blocker-sparse-buffers)). Guest-visible heap objects still come from `malloc` (above 1 TiB);
+nothing has failed from it yet. This page records what is known about running the port natively on an Intel
 Mac, the tools the build needs, what has been checked on real hardware, and the order of work. Apple silicon is out
 of scope for now: the game's own x86-64 code runs directly on the host CPU, so an Arm Mac would need Rosetta 2.
 Upstream shadPS4 runs that way, so an Intel build may later work under Rosetta, but nothing here has been tried there.
@@ -98,8 +101,35 @@ flat-shaded primitives.
   the surface is `SDL_Metal_GetLayer(SDL_Metal_CreateView(window))`, as upstream shadPS4 does.
 - **Tests:** all 17 focused suites pass on macOS, `dcp-runtime-tests` included (its `/proc/self/maps` reader has a
   `mach_vm_region` counterpart).
+- **First guest code:** with `--dcp-skip-launcher` the game runs its own code: splash screen, direct memory, its CRI
+  and RenderDL threads, Core Audio, the pad, the first graphics pipeline. The guest TCB through the pthread key works.
+- **The launcher's Vulkan probe** (`CreateProbeInstance`) needed the same portability flag and bundled-driver path as
+  the renderer's instance, or it reported "No Vulkan graphics driver was found".
+- **Apple's Metal compiler for AMD fails on `coherent device`** ("Compiler encountered an internal error"): the game's
+  compute shader `cs_0x000000008d304694` decorates a written buffer `Coherent`, which MoltenVK turns into MSL
+  `coherent`. Reproduced outside the game through `newComputePipelineStateWithFunction` on the RX 6600 XT; the same
+  MSL without `coherent` builds in safe and fast math. The recompiler leaves the decoration out on macOS
+  ([spirv_emit_context.cpp](../gpu/shadps4/shader_recompiler/backend/spirv/spirv_emit_context.cpp)); watch for stale
+  reads between invocations of one dispatch.
 - **GPU assertion messages were lost.** `assert_fail_impl` called `_Exit` before the POSIX log reader drained the
   stderr pipe; it now flushes first (Linux had the same gap).
+
+### Blocker: sparse buffers
+
+The buffer cache keeps guest GPU memory in **sparse arenas**: buffers of up to 4 GiB per address-space page whose
+memory is bound where the game uses it (`vkQueueBindSparse`, [buffer_cache.cpp](../gpu/shadps4/video_core/buffer_cache/buffer_cache.cpp)
+`GetArena`, `EnsureResident`, `SubmitPendingArenaBinds`). MoltenVK has no sparse binding (`sparseBinding` and
+`sparseResidencyBuffer` false; Metal has no sparse buffers), so the first arena fails (`Failed to get buffer device
+address`, [buffer.cpp](../gpu/shadps4/video_core/buffer_cache/buffer.cpp)). This is where the fourth boot stops.
+
+Options:
+
+- **Dense arenas:** on macOS, smaller arena pages (for example 256 MiB) allocated as ordinary device buffers when first
+  used, with residency kept as bookkeeping and no binds. Memory cost is the touched pages in full; the cache's upload,
+  download and fault paths stay as they are.
+- **Guest memory import:** arenas as `VK_EXT_external_memory_host` buffers over the guest pool (MoltenVK 1.4.2 takes
+  host pointers on this card, as SpeedBreaker found). Zero-copy, but it changes how the cache keeps GPU and CPU copies
+  apart, a much larger change.
 
 ### Robustness2 (worked around)
 
