@@ -2,7 +2,9 @@
 
 **Status: playable, early.** On an Intel Mac the game installs from the launcher, boots, and plays its tutorial with
 good graphics, sound and a PS5 controller, at 60 FPS. It is not packaged yet, and longer play is largely
-untested. Work is on branch `feature/macos-intel`.
+untested. Work is on branch `feature/macos-intel` of the fork
+[vorno-crole/dragons-crown-pro-pc](https://github.com/vorno-crole/dragons-crown-pro-pc), based on upstream v0.9.0. What is
+left is in [TODO.md](TODO.md).
 
 The approach is the Linux port's ([LINUX.md](LINUX.md)): the same loader, runtime and video core, with
 `#if defined(__APPLE__)` branches beside the existing `_WIN32` and Linux ones. Windows and Linux behaviour is
@@ -17,7 +19,7 @@ brew install llvm lld cmake ninja pkgconf sdl3 freetype libpng openssl@3 xxhash 
 #   build/macos-deps/include/vma/vk_mem_alloc.h   VMA v3.4.0 (SHA-256 in packaging/linux/ci-deps.sh)
 #   build/macos-deps/lib/libMoltenVK.dylib         Khronos MoltenVK 1.4.2 or newer (or set DCP_MOLTENVK)
 tools/build.sh                    # builds build/cmake/macos/bin/dragons_crown_pro
-tools/build.sh --test             # also builds and runs the 17 focused test suites
+tools/build.sh --test             # also builds and runs the 24 focused test suites
 build/cmake/macos/bin/dragons_crown_pro
 ```
 
@@ -39,33 +41,11 @@ environment variables are needed. Install the game from the launcher's **Install
 | Gameplay | tutorial played; leaving the tavern crashed once (thread cancel, fixed, awaiting a retest) |
 | Frame rate | 60 FPS in town and the first mission at a 720p render resolution (15-35 before fans were drawn as lists); 60 FPS at native 1080p in a short run (about 45 s, up to 790 draws per frame), with one unexplained 1 s stall |
 | Graphics | good; the smear at the end of cutscenes is fixed (see [Rect list patches](#what-was-found-on-the-way)) |
-| Online play (v0.9.0) | builds and its loopback tests pass; **never tried on a Mac**, and off unless turned on in the launcher (open item 8) |
+| Online play (v0.9.0) | builds and its loopback tests pass; **never tried on a Mac**, and off unless turned on in the launcher (see [TODO](TODO.md#later)) |
 | Packaging | not started: runs from the build folder |
 | Updater | **off**: the launcher skips the update check on macOS, because the releases have no macOS build |
 
-### Open items
-
-1. **Frame rate: fixed, 60 FPS.** Nearly every draw in this game is a triangle fan (the PS4's sprite primitive), and
-   Metal has no fans: MoltenVK rewrote each fan draw with two compute passes, about 70 us of GPU time per draw, so
-   650 draws took the frame to 20 FPS whatever the resolution. On macOS fans and polygons are now drawn as triangle
-   lists (see [Triangle fans](#what-was-found-on-the-way)). Check sprites, backgrounds and the UI for anything missing
-   or spiky.
-2. **Thread cancel.** `scePthreadCancel` of a running thread stopped the game when leaving the tavern. A running thread
-   now gets up to 2 s to finish ([runtime_thread.c](../src/runtime_thread.c)); if it is a long-running worker, real
-   cancellation is needed.
-3. **Host heap above 1 TiB.** Objects handed to the guest (TLS blocks, thread, mutex, semaphore, rwlock, event flag
-   and fiber handles) still come from `malloc`, at `0x6000...` and `0x7f...` addresses that do not fit the guest's
-   40-bit pointer fields. Nothing has failed from it yet; it is the most likely cause of a hard-to-explain crash. Fix:
-   a `runtime_low_alloc` over `runtime_low_map` memory, plus a debug check on pointers returned to the guest.
-4. **GPU workarounds to watch:** zeroed placeholders for null descriptors, no `coherent` buffers, `robustBufferAccess`
-   1.0 instead of 2. Wrong pixels or flicker would point here.
-5. **Dense arena memory.** Every touched 256 MiB arena page is allocated in full; VRAM use is not measured.
-6. **Log noise.** MoltenVK warns "Metal does not support disabling primitive restart" on many draws; harmless.
-7. **Packaging.** An `.app` with MoltenVK and the Homebrew dylibs inside, ad hoc signed; data in
-   `~/Library/Application Support/DragonsCrownProPC`.
-8. **Online play.** The branch is based on v0.9.0, which added online co-op, and a short boot works, but online has not
-   been run on a Mac. `net::platform_name` has no macOS case, so a Mac shows to other players as `Linux`. `wss://` relies
-   on Homebrew OpenSSL's own CA file: `system_ca_bundle` knows only Linux paths, so packaging an `.app` must supply one.
+The work left is in [TODO.md](TODO.md).
 
 ## Target machine
 
@@ -98,7 +78,7 @@ it at the `Zycore::Zycore` target.
 
 | Area | Linux | macOS |
 | --- | --- | --- |
-| Build | non-PIE so the brk heap stays below 1 TiB | PIE (macOS has neither non-PIE executables nor a brk heap); see open item 3 |
+| Build | non-PIE so the brk heap stays below 1 TiB | PIE (macOS has neither non-PIE executables nor a brk heap); see [Host heap](TODO.md#next) |
 | Main thread | the loader runs the game; the game window has a thread of its own | AppKit only works on the main thread: `main` starts the loader on a 16 MiB thread, and the main thread runs the launcher and the game window's event loop ([main_thread_mac.c](../src/main_thread_mac.c)) |
 | Guest TCB | `arch_prctl(ARCH_SET_GS)` per thread | GS is the pthread TSD array: the TCB is a pthread key's value, and the loader patches `mov rax, gs:[0]` to `gs:[8*key]`, as Windows does with a TEB TLS slot |
 | Address reservation | `MAP_FIXED_NOREPLACE` | the address as a hint (`MAP_FIXED_NOREPLACE` is defined as 0 in [compat_mac.h](../src/compat_mac.h)); every caller checks where the mapping landed |
@@ -173,11 +153,26 @@ drained the stderr pipe (Linux too; it flushes now). `<mach/mach.h>` defines `ro
 loader's own. The launcher tests read `loader.c`'s call order as text, so the macOS launcher wrapper sits after `main`.
 ld64 only leaves a weak symbol undefined when told to (`-Wl,-U`).
 
+## Fork and upstream
+
+`origin` is the fork and `upstream` is [saulob/dragons-crown-pro-pc](https://github.com/saulob/dragons-crown-pro-pc). The
+branch sits on top of `upstream/main`, so upstream's releases come in by rebasing:
+
+```bash
+git fetch upstream
+git rebase upstream/main          # resolve, then tools/build.sh --test, then a play test
+git push --force-with-lease origin feature/macos-intel
+```
+
+New upstream code is written for Windows and Linux, so expect each release to need small macOS fixes. v0.9.0 needed
+`getrandom`, `SOCK_CLOEXEC` and `SOCK_NONBLOCK` replaced, and leading underscores on one test's assembly symbols.
+
 ## Debugging
 
 | Tool | Use |
 | --- | --- |
 | `--dcp-skip-launcher` | start the game directly |
+| `--launcher` | show the launcher after **Show this launcher** was turned off (holding Shift does not work on macOS) |
 | `--timeout N` | watchdog: after N seconds, dump every thread's stack and stop (exit 142); not a crash |
 | `--check-imports` | create the window and Vulkan device, load the image, resolve imports, run no game code |
 | `DCP_FRAME_STATS=1` | FPS and pacing, and a breakdown of every frame over 40 ms |
@@ -217,11 +212,11 @@ It needs an Apple silicon Mac to try; nothing here has been run there.
 | 1. Build | launcher opens and installs a `.pkg` | done (the boot image byte comparison against Windows/Linux was skipped: no reference build) |
 | 2. Runtime | `dcp-runtime-tests` pass | done |
 | 3. Boot | window, device, guest start-up, threads, audio, input, title menu | done |
-| 4. Play | a full stage at a steady 60 FPS, saves and shader cache written | in progress: 60 FPS in town and the first mission; open items 2-5 |
+| 4. Play | a full stage at a steady 60 FPS, saves and shader cache written | in progress: 60 FPS in town and the first mission; see [TODO](TODO.md) |
 | 5. Package | an `.app` that runs from Finder on a clean account | not started |
 
 Phases 0-3 and the start of 4 took about two days, and the frame rate one more evening. The estimate for the rest:
-about 1-2 weeks part-time for a stable full playthrough (open items 2-5), and about a week for packaging.
+about 1-2 weeks part-time for a stable full playthrough, and about a week for packaging.
 
 ## Learnings from SpeedBreaker
 
@@ -237,3 +232,4 @@ by a discrete GPU over PCIe, so measure before assuming high resolutions are fre
   fixes a shared bug (the log flush, thread cancel), and then the commit says so.
 - No game files, keys or derived data in the repository (`game/`, `user/`, boot images, `rars/`).
 - Record what was found here: what was tried, what fixed it, what it ruled out.
+- Keep [TODO.md](TODO.md) current in the same change as the work.

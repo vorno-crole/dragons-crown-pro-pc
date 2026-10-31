@@ -65,7 +65,8 @@ left. The panel uses the frame counter's style and corner, next to it when both 
 
 The game's player cards (as in Join Friends Room) show **System type** as the player's PC platform and port
 version, for example `Windows · v0.9.0`, `Linux · v0.9.0` or `Steam Deck · v0.9.0`, instead of PlayStation 4.
-Steam Deck is recognised from the machine's DMI identity (Valve Jupiter or Galileo); any other Linux PC shows Linux. The
+Steam Deck is recognised from the machine's DMI identity (Valve Jupiter or Galileo); any other Linux PC shows Linux, and so does a Mac
+with the [fork's macOS port](MACOS.md), where online play is untested. The
 version is the CMake project version, the same one the launcher and the packages show.
 
 Who can play together is decided by an internal online protocol number (`net::kOnlineProtocolVersion`,

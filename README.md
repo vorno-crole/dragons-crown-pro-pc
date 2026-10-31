@@ -2,15 +2,18 @@
 
 # Dragon's Crown Pro - PC Port
 
-### Dragon's Crown Pro, Vanillaware's PS4 side-scrolling beat 'em up, running natively on Windows, and experimentally on Linux and Steam Deck, with Online Co-op, the TRG launcher and modern graphics and display options
+### Dragon's Crown Pro, Vanillaware's PS4 side-scrolling beat 'em up, running natively on Windows, and experimentally on Linux, Steam Deck and Intel Macs, with Online Co-op, the TRG launcher and modern graphics and display options
 
 [![Latest release](https://img.shields.io/github/v/release/saulob/dragons-crown-pro-pc?style=for-the-badge&label=release&color=e0bb32&labelColor=07101f&include_prereleases&cacheSeconds=300)](https://github.com/saulob/dragons-crown-pro-pc/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/saulob/dragons-crown-pro-pc/total?style=for-the-badge&color=e0bb32&labelColor=07101f&cacheSeconds=300)](https://github.com/saulob/dragons-crown-pro-pc/releases)
-![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20experimental%20%7C%20Steam%20Deck%20experimental-00acc1?style=for-the-badge&labelColor=07101f)
+![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20experimental%20%7C%20Steam%20Deck%20experimental%20%7C%20macOS%20Intel%20experimental-00acc1?style=for-the-badge&labelColor=07101f)
 
 <sub>The original PS4 game code runs on the PC with a replacement for the PS4 system libraries and a Vulkan renderer derived from <a href="https://github.com/shadps4-emu/shadPS4">shadPS4</a>. <b>No game files included</b>: bring your own legally obtained Dragon's Crown Pro PS4 package.</sub>
 
 </div>
+
+> [!NOTE]
+> **This is a fork that adds an Intel Mac port** to [saulob/dragons-crown-pro-pc](https://github.com/saulob/dragons-crown-pro-pc). The game plays at 60 FPS on the one Mac it has been tested on, but there is no download yet: you [build it yourself](#macos-intel-1). Start at [macOS (Intel)](#macos-intel). Windows, Linux and Steam Deck players should use the [upstream project](https://github.com/saulob/dragons-crown-pro-pc); the release links and badges on this page point there. Everything below that does not mention macOS is upstream's documentation.
 
 <img width="1941" height="1156" alt="2026-10-14_23-43" src="https://github.com/user-attachments/assets/984433e5-1bd8-498a-949c-68815e73b901" />
 
@@ -18,7 +21,7 @@
 
 - **Online Co-op** (new in v0.9.0): play the game's own online multiplayer with friends over the Internet, with Friend Codes, friend requests and Join a Friend's room. See [Online Co-op](#online-co-op)
 - **Regions**: the US (`CUSA10454` 1.00 and 1.01), Japanese (`CUSA07001` 1.00, 1.02 and 1.03) and Asia / Hong Kong (`CUSA10209` 1.00 and 1.02) PS4 releases
-- **Native PC port**: the game's own x86-64 code runs directly on the PC. It is not an emulator. Windows is the primary tested platform, and there is an experimental native Linux / Steam Deck AppImage with the same intended feature set. Linux needs no Proton or Wine.
+- **Native PC port**: the game's own x86-64 code runs directly on the PC. It is not an emulator. Windows is the primary tested platform, and there is an experimental native Linux / Steam Deck AppImage with the same intended feature set. Linux needs no Proton or Wine. This fork adds an experimental [Intel Mac port](#macos-intel).
 - **TRG launcher** that installs the game directly from your own `.pkg` file, with no Python or other tools needed, and remembers its window position
 - **Windowed** and **Borderless Fullscreen**, switched with **F11** while playing, with window size and monitor selection
 - **Graphics card selection**: any Vulkan graphics card the renderer can use
@@ -36,7 +39,7 @@
 - Xbox controllers without setup, and keyboard support, with **Xbox button prompts** as an option (PlayStation prompts are the default)
 - Local multiplayer with up to four controllers
 - Portable `user` and `logs` folders next to the program for settings, saves, the shader cache and logs
-- **Update check**: the launcher looks for a newer release of the port at start and installs it only when you choose to; the game files and the `user` folder are kept
+- **Update check**: the launcher looks for a newer release of the port at start and installs it only when you choose to; the game files and the `user` folder are kept (Windows and Linux; off on macOS)
 
 ## Online Co-op
 
@@ -67,6 +70,7 @@ Both players need **Online play** On. With it Off, the game runs offline exactly
 **Testing notes**
 - Real-world testing has so far focused on two-player sessions. Dragon's Crown supports up to four players in a room, but four-player online on the PC port has not been fully validated yet.
 - Online play on Linux and Steam Deck is experimental: it uses the same code as Windows, but it has not yet been tested on real Linux or Steam Deck hardware (see [Linux and Steam Deck](#linux-and-steam-deck)).
+- Online play on macOS has never been tried (see [macOS (Intel)](#macos-intel)).
 
 ### Ping and frame counter
 
@@ -104,6 +108,7 @@ The online service stores anonymous aggregate usage statistics, such as player c
 
 - Windows 10 (version 1903 or newer) or Windows 11, 64-bit
 - **Or, experimental:** 64-bit Linux on x86-64, including the Steam Deck, on an X11 or Wayland desktop, with glibc 2.31 or newer and a Vulkan 1.3 loader (`libvulkan.so.1`) and graphics driver (see [Linux and Steam Deck](#linux-and-steam-deck)). The game has been run on Ubuntu 24.04 (WSL2), and community testers report it working on Bazzite (KDE Plasma, Wayland, AMD RADV) and on a Steam Deck LCD; other distributions that are new enough may work
+- **Or, experimental, with this fork:** an Intel Mac with a Metal 3 graphics card, through MoltenVK (see [macOS (Intel)](#macos-intel))
 - A processor with **AVX**: Intel Core 2nd generation (Sandy Bridge), AMD FX or newer. The game's PS4 code runs directly on it; LZCNT, MOVBE and BMI1, which some of these lack, are handled in software. On a processor without LZCNT, the USA 1.01 and Asia and Hong Kong 1.02 builds do not start yet; the other builds do
 - A graphics card and driver with **Vulkan 1.3**, `VK_EXT_robustness2`, `VK_KHR_push_descriptor` and `VK_EXT_vertex_attribute_divisor` on either platform (tested on an NVIDIA GeForce RTX 4070 and Intel UHD Graphics 730 on Windows)
 - **Your own legally obtained Dragon's Crown Pro package**: a decrypted PS4 `.pkg` file of this exact game version, and about 6 GB of free space for the installed game:
@@ -167,13 +172,26 @@ To bring the launcher back after turning **Show this launcher** off, hold **Shif
 
 **Online Co-op on Linux and Steam Deck:** the Linux build has the same Online page, Friends, rooms, direct connections, Ping and cheat lock as Windows, from the same code, and Linux and Windows players can play together. Other players see your platform as Linux or Steam Deck. This is checked by automated tests and builds only: online play on a real Linux PC or Steam Deck has not been tested by the maintainer yet, so reports are very welcome. On a Steam Deck, set up the Online page (Online name, Friend Codes) in Desktop Mode, where a keyboard is at hand.
 
+### macOS (Intel)
+
+**Experimental, and for people comfortable building from source.** There is no download: this fork publishes no releases, so [build it yourself](#macos-intel-1). It is a native build, with no Wine or virtual machine, and the Mac has no updater, so update by pulling and rebuilding.
+
+- **What works:** installing from your `.pkg`, the launcher, sound, a keyboard, a PS5 controller, and 60 FPS at native 1080p in the tutorial, town and first mission.
+- **Tested on one machine only:** an Intel i7-9700K with an AMD Radeon RX 6600 XT on macOS 15.4, with the USA 1.00 build. Any other Mac, graphics card or game build is untested, and longer play is largely untested.
+- **Not supported:** Apple silicon natively, because the game's x86-64 code runs directly on the processor. Rosetta 2 might work, but nobody has tried it.
+- **Online Co-op has never been tried on a Mac.** It stays off unless you turn it on, and other players would see a Mac as Linux.
+
+From a build folder, `game` and `user` are in the repository folder and the logs in `build/logs`. **Hold Shift does not work on a Mac:** to bring the launcher back, start the program with `--launcher`.
+
+Current state, debugging and everything found on the way are in [docs/MACOS.md](docs/MACOS.md); the work left is in [docs/TODO.md](docs/TODO.md).
+
 ### Windows SmartScreen
 
 Windows may warn the first time you run the program, because the release is not digitally signed. If you downloaded it from this repository's releases page, choose **More info**, then **Run anyway**.
 
 ## The launcher
 
-The launcher opens before the game. Your choices are saved to `user\dcp.ini`. To turn the launcher off, set **Show this launcher** to **Off** on the Play page. Hold **Shift** while starting to bring it back (on Linux, also with `--launcher`, see [Linux and Steam Deck](#linux-and-steam-deck)). The launcher works the same on both platforms (Allow overlay programs is Windows-only); on Linux the folder paths below use `/` instead of a backslash.
+The launcher opens before the game. Your choices are saved to `user\dcp.ini`. To turn the launcher off, set **Show this launcher** to **Off** on the Play page. Hold **Shift** while starting to bring it back (on Linux, also with `--launcher`, see [Linux and Steam Deck](#linux-and-steam-deck)). The launcher works the same on all platforms (Allow overlay programs is Windows-only); on Linux and macOS the folder paths below use `/` instead of a backslash. On macOS, use `--launcher`; Shift does not work there.
 
 ### Play
 - **Install game...** from your `.pkg` file, with the Title ID, version and `eboot.bin` checks, and **Reinstall game...**
@@ -259,6 +277,8 @@ If the game does not start or crashes, please open an [issue](https://github.com
 
 For a Linux or Steam Deck problem, please also give your Linux distribution, your GPU and its driver (for example Mesa and RADV, or NVIDIA), and on a Steam Deck whether you were in Desktop Mode or Gaming Mode.
 
+Please do not report macOS problems to the upstream project: its maintainer does not support the Mac port. This fork does not take issues yet.
+
 ## Building it yourself
 
 ```powershell
@@ -286,11 +306,26 @@ bash tools/package-linux.sh       # dist/DragonsCrownProPC-v<version>-x86_64.App
 
 `tools/build.sh --run` starts the loader that was built. Python is not needed. The AppImage is built on Ubuntu 20.04, whose glibc (2.31) is the oldest one it runs on, and `tools/package-linux.sh` checks every ELF file in it against that; `.github/workflows/linux-appimage.yml` does the same in GitHub Actions (started by hand, publishes nothing).
 
-The technical notes are in [docs](docs): [launcher and settings](docs/LAUNCHER.md), [online play](docs/ONLINE.md), [Linux port](docs/LINUX.md), [graphics](docs/GRAPHICS.md), [first boot](docs/FIRST_BOOT.md), [bootstrap](docs/BOOTSTRAP.md) and [references](docs/REFERENCES.md).
+### macOS (Intel)
+
+```sh
+git clone -b feature/macos-intel https://github.com/vorno-crole/dragons-crown-pro-pc.git
+cd dragons-crown-pro-pc
+brew install llvm lld cmake ninja pkgconf sdl3 freetype libpng openssl@3 xxhash \
+    vulkan-headers vulkan-loader glslang spirv-tools fmt boost zydis robin-map
+# Also needed, in build/macos-deps/: the VMA header and MoltenVK 1.4.2 (docs/MACOS.md)
+tools/build.sh                    # fetches the pinned dependencies, builds build/cmake/macos/bin/dragons_crown_pro
+tools/build.sh --test             # also builds and runs the focused tests
+build/cmake/macos/bin/dragons_crown_pro
+```
+
+Homebrew must be the Intel one, under `/usr/local`. Install the game from the launcher's Play page, as on the other platforms. The details are in [docs/MACOS.md](docs/MACOS.md#building-and-running).
+
+The technical notes are in [docs](docs): [launcher and settings](docs/LAUNCHER.md), [online play](docs/ONLINE.md), [Linux port](docs/LINUX.md), [macOS port](docs/MACOS.md) and its [TODO list](docs/TODO.md), [graphics](docs/GRAPHICS.md), [first boot](docs/FIRST_BOOT.md), [bootstrap](docs/BOOTSTRAP.md) and [references](docs/REFERENCES.md).
 
 ## Sponsoring
 
-Dragon's Crown Pro PC is maintained and developed in my free time. If you enjoy the project or find it useful, consider supporting its continued development.
+The Dragon's Crown Pro PC port is maintained and developed by [saulob](https://github.com/saulob) in their free time. If you enjoy the project or find it useful, consider supporting its continued development. This button goes to them, not to this fork.
 
 <p align="center">
 <a href="https://github.com/sponsors/saulob" target="_blank"><img src="https://img.shields.io/badge/GitHub%20Sponsors-Sponsor-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="GitHub Sponsors"></a>
@@ -298,9 +333,11 @@ Dragon's Crown Pro PC is maintained and developed in my free time. If you enjoy 
 
 ## Credits
 
+- [Dragon's Crown Pro PC](https://github.com/saulob/dragons-crown-pro-pc) by saulob, the port this fork is based on, which did all the work apart from the macOS support
 - Dragon's Crown Pro by Vanillaware, published by Atlus (2018). This is an unofficial fan-made PC port. It is not affiliated with or endorsed by Vanillaware, Atlus, SEGA, Sony Interactive Entertainment or any other rights holder, and it contains none of their files.
 - [shadPS4](https://github.com/shadps4-emu/shadPS4) for the Vulkan renderer, shader recompiler and GPU command processing the video core is built on, and for the PS4 package extractor the installer is adapted from, as it was before upstream commit `be22674f` removed it (GPL-2.0-or-later)
 - [gow3_pc](https://github.com/FelipePrado0/gow3_pc) and its lineage, uncharted-ndc-native, MediEvil PC and the HayatoG ports, for the loader, runtime and video core this port grew from (see [docs/REFERENCES.md](docs/REFERENCES.md))
+- [MoltenVK](https://github.com/KhronosGroup/MoltenVK), which runs the Vulkan renderer on Metal on macOS
 - [bloodborne_pc_windows](https://github.com/Phroster/bloodborne_pc_windows) for the anisotropic filtering approach
 - [SMAA](https://github.com/iryoku/smaa) by Jorge Jimenez et al., and AMD FidelityFX Super Resolution 1
 - [TRG Launcher](https://github.com/TekRantGaming/trg-launcher), the launcher interface, pinned at v1.1.0, licensed under the MIT License
@@ -309,7 +346,7 @@ Dragon's Crown Pro PC is maintained and developed in my free time. If you enjoy 
 
 ## AI disclosure
 
-AI tools were used to assist with code analysis, development, debugging and documentation. Changes were directed, tested and reviewed by the maintainer.
+AI tools were used to assist with code analysis, development, debugging and documentation. Changes were directed, tested and reviewed by the maintainer. AI tools also wrote most of this fork's macOS code and documentation, directed and tested in game by the fork's maintainer.
 
 ## License
 
