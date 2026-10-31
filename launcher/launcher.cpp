@@ -329,7 +329,9 @@ public:
         online_page_ = std::make_unique<OnlinePage>(UserDir());
         launcher_ = std::make_unique<trg::Launcher>(MakeConfig());
         updater_ = std::make_unique<trg::update::UpdateController>(MakeUpdateConfig(InstallDir()));
+#ifndef __APPLE__ // the releases have no macOS build: an offer would install a Windows or Linux one
         updater_->StartCheck();
+#endif
         ApplySavedPatches();
 
         outcome = Outcome::kRunning;
