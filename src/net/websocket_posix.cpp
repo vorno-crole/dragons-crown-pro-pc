@@ -10,6 +10,7 @@
 #include <mutex>
 #include <vector>
 
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -44,8 +45,20 @@ int Connect(const WsUrl& url, int timeout_ms, std::string* error) {
     }
     int fd = -1;
     for (const addrinfo* p = found; p && fd < 0; p = p->ai_next) {
+#ifdef __APPLE__
+        // macOS has no SOCK_CLOEXEC or SOCK_NONBLOCK; SO_NOSIGPIPE also covers OpenSSL's own writes.
+        fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        if (fd < 0) continue;
+        const int no_sigpipe = 1;
+        if (fcntl(fd, F_SETFD, FD_CLOEXEC) != 0 || fcntl(fd, F_SETFL, O_NONBLOCK) != 0 ||
+            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe)) != 0) {
+            ::close(fd), fd = -1;
+            continue;
+        }
+#else
         fd = socket(p->ai_family, p->ai_socktype | SOCK_CLOEXEC | SOCK_NONBLOCK, p->ai_protocol);
         if (fd < 0) continue;
+#endif
         if (::connect(fd, p->ai_addr, p->ai_addrlen) != 0 && errno != EINPROGRESS) {
             ::close(fd), fd = -1;
             continue;

@@ -1,6 +1,7 @@
 #include "net/crypto.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -86,6 +87,9 @@ private:
 bool random_bytes(void* out, size_t size) {
 #ifdef _WIN32
     return BCRYPT_SUCCESS(BCryptGenRandom(nullptr, static_cast<PUCHAR>(out), ULONG(size), BCRYPT_USE_SYSTEM_PREFERRED_RNG));
+#elif defined(__APPLE__)
+    arc4random_buf(out, size);
+    return true;
 #else
     auto* p = static_cast<uint8_t*>(out);
     while (size) {

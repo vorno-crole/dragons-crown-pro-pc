@@ -306,9 +306,10 @@ static void host_sets(void) {
 
 enum { PROBE_PAGE = 4096, PROBE_RSP = 4, PROBE_FLAGS = 11 };
 
-uint64_t dcp_probe_in[16], dcp_probe_out[16];
-const void *dcp_probe_code;
-void dcp_probe_run(void);
+/* Named explicitly so the assembly below finds them on Mach-O too, which prefixes C symbols with an underscore. */
+uint64_t dcp_probe_in[16] __asm__("dcp_probe_in"), dcp_probe_out[16] __asm__("dcp_probe_out");
+const void *dcp_probe_code __asm__("dcp_probe_code");
+void dcp_probe_run(void) __asm__("dcp_probe_run");
 __asm__(".text\n.globl dcp_probe_run\ndcp_probe_run:\n"
         " push %rbx\n push %rbp\n push %rdi\n push %rsi\n push %r12\n push %r13\n push %r14\n push %r15\n"
         " lea dcp_probe_in(%rip), %rax\n mov dcp_probe_code(%rip), %r11\n"
