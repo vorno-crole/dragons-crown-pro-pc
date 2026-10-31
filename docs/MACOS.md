@@ -30,7 +30,7 @@ environment variables are needed. Install the game from the launcher's **Install
 | Area | State |
 | --- | --- |
 | Build | done: Homebrew LLVM 23, x86_64, PIE |
-| Focused tests | all 17 suites pass, `dcp-runtime-tests` included |
+| Focused tests | 23 of 24 suites pass, `dcp-runtime-tests` included; `dcp-online-hle-tests` and the cross-build rooms in `dcp-online-builds-tests` need a running lobby and were skipped |
 | Launcher | works: install from `.pkg`, settings, subtitle "MAC (INTEL) PORT" |
 | Guest memory, threads, fibers | work (named Mach memory object, guest TCB in a pthread key) |
 | Vulkan on MoltenVK 1.4.2 | works, with workarounds for missing robustness2 features, sparse buffers and a Metal compiler bug |
@@ -39,8 +39,9 @@ environment variables are needed. Install the game from the launcher's **Install
 | Gameplay | tutorial played; leaving the tavern crashed once (thread cancel, fixed, awaiting a retest) |
 | Frame rate | 60 FPS in town and the first mission at a 720p render resolution (15-35 before fans were drawn as lists); 60 FPS at native 1080p in a short run (about 45 s, up to 790 draws per frame), with one unexplained 1 s stall |
 | Graphics | good; the smear at the end of cutscenes is fixed (see [Rect list patches](#what-was-found-on-the-way)) |
+| Online play (v0.9.0) | builds and its loopback tests pass; **never tried on a Mac**, and off unless turned on in the launcher (open item 8) |
 | Packaging | not started: runs from the build folder |
-| Updater | **not adapted**: it offers the upstream release (Windows ZIP or AppImage); do not install updates from a Mac build |
+| Updater | **off**: the launcher skips the update check on macOS, because the releases have no macOS build |
 
 ### Open items
 
@@ -62,7 +63,9 @@ environment variables are needed. Install the game from the launcher's **Install
 6. **Log noise.** MoltenVK warns "Metal does not support disabling primitive restart" on many draws; harmless.
 7. **Packaging.** An `.app` with MoltenVK and the Homebrew dylibs inside, ad hoc signed; data in
    `~/Library/Application Support/DragonsCrownProPC`.
-8. **Upstream.** The branch is based on v0.8.0; upstream has released v0.9.0.
+8. **Online play.** The branch is based on v0.9.0, which added online co-op, and a short boot works, but online has not
+   been run on a Mac. `net::platform_name` has no macOS case, so a Mac shows to other players as `Linux`. `wss://` relies
+   on Homebrew OpenSSL's own CA file: `system_ca_bundle` knows only Linux paths, so packaging an `.app` must supply one.
 
 ## Target machine
 
