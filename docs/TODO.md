@@ -9,13 +9,37 @@ work. Windows and Linux work belongs to [upstream](https://github.com/saulob/dra
 - [ ] **Play a session on v0.9.0.** The rebased build has only had a 45 s unattended boot. Check a cutscene ending, the
   launcher with no update banner, sprites, backgrounds and the UI for anything missing or spiky, and a good stretch of
   play.
-- [ ] **Retest leaving the tavern.** It crashed once on thread cancel, and the fix has not been exercised since. Watch
-  the log for `scePthreadCancel ... waited` and `STOP: scePthreadCancel`.
 - [ ] **Measure VRAM use.** Every touched 256 MiB arena page is allocated in full (`DENSE_ARENAS`); the use has never
   been measured. Do it during the session above.
 
+## Automated testing
+
+A proof run on 2026-10-31 worked with no new code: scripted input took the game from the title to town, with
+`screencapture -l <window>` showing real frames, on a copy of `user/` (`--user`, `--logs`).
+
+- [ ] **`tools/play-test.sh`.** One command: copy `user/` from a named fixture, start the game with `--timeout`, follow a
+  scenario (press, hold, wait, shot), then report the exit code (142 is the planned stop), `STOP` lines, FPS and the
+  screenshots. Keep the screen awake with `caffeinate -d`. The Mac must stay unlocked: with it locked the game still
+  runs at 60 FPS, but `screencapture` fails, and display problems may not show.
+- [ ] **Save fixtures.** Saves taken just before what needs testing (a cutscene ending, a mission, a boss), in a
+  git-ignored folder: they are game data.
+- [ ] **Recorded routes.** `DCP_PAD_RECORD` and `DCP_PAD_REPLAY` for routes a person plays once. Replay is timed in
+  milliseconds, so use it for menus and town; combat will drift.
+- [ ] **Wait on the game, not the clock.** Fixed delays are fragile. Compare shots until the screen settles, or log
+  screen changes from the game.
+- [ ] **Screen comparison.** Reference shots with `ffmpeg` SSIM, masking the FPS and Ping overlay.
+- [ ] **Short-lived bugs.** Shots every few seconds miss a 0.5 s smear: record the window or save a burst of frames.
+- [ ] **A frame dump in the renderer.** `FrameCapture` writes a text list of passes, no pixels. A PNG of the presented
+  frame would be exact and need no Screen Recording permission. It is needed: `screencapture -l` can itself stall the
+  game for 1 s, so frame times from a run that takes window screenshots cannot be trusted.
+
 ## Next
 
+- [ ] **The 1 s stall.** `[CAMetalLayer nextDrawable]` blocks the `dcp:present` thread for most of a second, called from
+  MoltenVK's `getCAMetalDrawable` while `vkQueueSubmit` encodes (`MVKCmdClearImage`), not from `vkAcquireNextImageKHR`.
+  Window screenshots provoke it, in 11 of 25 shots in the last runs and in 0 of 16 in two others; it was also seen twice
+  with no screenshot, with the cause unknown. Still open: why a blocked `dcp:present` delays the flip on
+  `PresentThread`, and which fix applies.
 - [ ] **Host heap above 1 TiB.** Objects handed to the guest (TLS blocks, thread, mutex, semaphore, rwlock, event flag
   and fiber handles) still come from `malloc`, at `0x6000...` and `0x7f...` addresses that do not fit the guest's 40-bit
   pointer fields. Nothing has failed from it yet, but it is the likeliest cause of a hard-to-explain crash. Fix: a
@@ -58,7 +82,6 @@ Nothing to do unless these show up.
   list with a spare vertex would bring the cutscene smear back. None has been seen.
 - **The MoltenVK rect cause.** Patch rounding is the likely mechanism behind the smear, but it was never confirmed in
   MoltenVK's source, and it does not explain the smear's 45° edge.
-- **A 1 s stall at native 1080p.** Seen once in about 45 s, with no shader compile behind it.
 - **`Present: Skipping frame!`** A few times per run (swapchain acquire failed twice). It repeats a frame.
 - **GPU workarounds.** Zeroed placeholders for null descriptors, no `coherent` buffers, `robustBufferAccess` 1.0 instead
   of 2. Wrong pixels or flicker would point here.
@@ -68,6 +91,7 @@ Nothing to do unless these show up.
 
 ## Done
 
+- 2026-10-31: left the tavern with no crash and no thread cancel lines in the log (one scripted run).
 - 2026-10-31: forked to `vorno-crole/dragons-crown-pro-pc`; README, this list and the upstream sync steps added.
 - 2026-10-31: launcher update check off on macOS.
 - 2026-10-31: rebased on v0.9.0; online code and LZCNT tests build on macOS.
